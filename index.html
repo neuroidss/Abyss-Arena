@@ -375,7 +375,7 @@
                      moveJoystick.on('move', (evt, data) => {
                         if (data.vector) {
                             player.inputVelocity.x = data.vector.x;
-                            player.inputVelocity.z = -data.vector.y; // NippleJS Y is screen Y (up/down) -> map to Z (forward/back)
+                            player.inputVelocity.z = data.vector.y; // NippleJS Y is screen Y (up/down) -> map to Z (forward/back)
                         }
                     }).on('end', () => {
                          player.inputVelocity.x = 0;
@@ -394,7 +394,7 @@
                              // Adjust sensitivity as needed
                              const lookSensitivity = 0.03;
                              touchLookDelta.x = -data.vector.x * lookSensitivity;
-                             touchLookDelta.y = -data.vector.y * lookSensitivity;
+                             touchLookDelta.y = data.vector.y * lookSensitivity;
                          }
                      }).on('end', () => {
                          touchLookDelta.x = 0;
@@ -1178,8 +1178,8 @@ Current Game Time: ${gameTime.toFixed(1)}s.`;
              let jump = false;
 
             // Keyboard
-             if (activeKeys['KeyW'] || activeKeys['ArrowUp']) moveForward += 1;
-             if (activeKeys['KeyS'] || activeKeys['ArrowDown']) moveForward -= 1;
+             if (activeKeys['KeyW'] || activeKeys['ArrowUp']) moveForward -= 1;
+             if (activeKeys['KeyS'] || activeKeys['ArrowDown']) moveForward += 1;
              if (activeKeys['KeyA'] || activeKeys['ArrowLeft']) moveRight -= 1;
              if (activeKeys['KeyD'] || activeKeys['ArrowRight']) moveRight += 1;
              if (activeKeys['Space']) jump = true;
@@ -1221,9 +1221,9 @@ Current Game Time: ${gameTime.toFixed(1)}s.`;
                  const rightStickX = Math.abs(gamepad.axes[2]) > 0.15 ? gamepad.axes[2] : 0; // Higher deadzone for look
                  const rightStickY = Math.abs(gamepad.axes[3]) > 0.15 ? gamepad.axes[3] : 0;
 
-                 moveForward -= leftStickY; // Invert Y axis
+                 moveForward += leftStickY; // Invert Y axis
                  moveRight += leftStickX;
-                 lookRight += rightStickX * PLAYER_ROTATE_SPEED * 2 * deltaTime; // Scale look speed for gamepad
+                 lookRight -= rightStickX * PLAYER_ROTATE_SPEED * 2 * deltaTime; // Scale look speed for gamepad
                  lookUp -= rightStickY * PLAYER_ROTATE_SPEED * 2 * deltaTime; // Invert Y axis and scale
 
                  if (gamepad.buttons[0].pressed) jump = true;
@@ -1273,9 +1273,9 @@ Current Game Time: ${gameTime.toFixed(1)}s.`;
              desiredCameraPosition.y += 0.1; // Slightly above the mesh center (adjust as needed)
 
             // Add a slight offset behind the player if desired (3rd person)
-             // const cameraOffset = new THREE.Vector3(0, 0.5, 3); // Example offset x, y, z relative to player rotation
-             // cameraOffset.applyEuler(player.rotation);
-             // desiredCameraPosition.add(cameraOffset);
+              const cameraOffset = new THREE.Vector3(0, 0.5, 3); // Example offset x, y, z relative to player rotation
+              cameraOffset.applyEuler(player.rotation);
+              desiredCameraPosition.add(cameraOffset);
 
             // Smooth camera follow (lerp)
              camera.position.lerp(desiredCameraPosition, 0.1); // Adjust lerp factor for smoothness
