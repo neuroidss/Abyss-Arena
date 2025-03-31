@@ -1,0 +1,1429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Abyss Game - LLM Controlled World</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; color: #fff; font-family: 'system-ui', sans-serif; }
+        #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+        #messages {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            max-height: 25%; /* Limit height */
+            overflow-y: auto; /* Add scrollbar if needed */
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 10;
+            pointer-events: none; /* Allow clicks through */
+            display: flex; /* Use flexbox */
+            flex-direction: column-reverse; /* Newest messages at the bottom visually, but added to top of div */
+        }
+        #messages div {
+             margin-bottom: 3px; /* Spacing between messages */
+        }
+        #controls-container {
+            position: fixed;
+            bottom: 0; /* Usually bottom, but prompt requested middle for touch */
+            left: 0;
+            width: 100%;
+            height: 50%; /* Area for joysticks */
+            display: flex;
+            justify-content: space-around; /* Place joysticks apart */
+            align-items: center; /* Center vertically */
+            pointer-events: none; /* Allow underlying canvas interaction */
+            z-index: 5; /* Below messages/chat */
+             /* Mid-screen placement as requested */
+            top: 50%;
+            transform: translateY(-50%);
+            height: 200px; /* Define height */
+
+        }
+        .joystick-zone {
+            position: relative; /* Needed for nipplejs */
+            width: 150px;
+            height: 150px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            pointer-events: auto; /* Enable pointer events for joystick zones */
+        }
+        #joystick-move { left: 5%; }
+        #joystick-look { right: 5%; }
+
+        #chat-container {
+            position: fixed;
+            bottom: 50px; /* Position above settings */
+            left: 10px;
+            right: 10px;
+            display: flex;
+            z-index: 11;
+        }
+        #chat-input {
+            flex-grow: 1;
+            padding: 8px;
+            border: 1px solid #555;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            border-radius: 4px 0 0 4px;
+        }
+        #chat-send {
+            padding: 8px 12px;
+            border: 1px solid #555;
+            background: #444;
+            color: #fff;
+            cursor: pointer;
+            border-left: none;
+            border-radius: 0 4px 4px 0;
+        }
+         #chat-send:hover { background: #555; }
+
+        #settings-container {
+             position: fixed;
+             bottom: 10px;
+             left: 10px;
+             right: 10px;
+             background: rgba(0,0,0,0.6);
+             padding: 5px;
+             border-radius: 5px;
+             z-index: 11;
+             display: flex;
+             gap: 10px;
+             align-items: center;
+             font-size: 12px;
+        }
+         #loading-status {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            z-index: 100;
+            display: none; /* Hidden by default */
+         }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="messages"></div>
+
+    <!-- Prompt asks for controls in middle, which is unusual for touch -->
+    <div id="controls-container">
+        <div id="joystick-move" class="joystick-zone"></div>
+        <div id="joystick-look" class="joystick-zone"></div>
+    </div>
+
+    <div id="chat-container">
+        <input type="text" id="chat-input" placeholder="Interact with the Abyss...">
+        <button id="chat-send">Send</button>
+    </div>
+
+     <div id="settings-container">
+        <span>LLM Engine:</span>
+        <select id="llm-engine-select">
+            <option value="none" selected>Select LLM Engine</option>
+            <option value="webllm">WebLLM (WebGPU)</option>
+            <option value="llmjs">LLM.js (CPU)</option>
+            <!-- <option value="openai">OpenAI API</option> -->
+            <!-- <option value="gemini">Gemini API</option> -->
+            <!-- <option value="claude">Claude API</option> -->
+            <!-- <option value="ollama">Ollama API</option> -->
+        </select>
+        <span id="webllm-options" style="display: none;">
+            Model:
+            <select id="webllm-model-select">
+                <option value="Qwen2.5-Coder-3B-Instruct-q4f32_1-MLC">Qwen2.5 3B Coder</option>
+                <option value="Qwen2.5-Coder-7B-Instruct-q4f32_1-MLC">Qwen2.5 7B Coder</option>
+            </select>
+        </span>
+         <span id="llmjs-options" style="display: none;">
+             Model:
+             <select id="llmjs-model-select">
+                 <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf">Qwen2.5 3B (GGUF Q4)</option>
+                 <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf">Qwen2.5 7B (GGUF Q4)</option>
+                 <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf">Qwen2.5 14B (GGUF Q4)</option>
+             </select>
+         </span>
+        <button id="load-llm-button">Load LLM</button>
+        <span>Temp:</span>
+        <input type="range" id="temperature-slider" min="0" max="2" step="0.1" value="0.7">
+        <span id="temperature-value">0.7</span>
+    </div>
+
+    <div id="loading-status">Loading LLM... <span id="loading-progress"></span></div>
+
+    <!-- 2025 Vibe Coding Game Jam -->
+    <a target="_blank" href="https://jam.pieter.com" style="font-family: 'system-ui', sans-serif; position: fixed; bottom: -1px; right: -1px; padding: 7px; font-size: 14px; font-weight: bold; background: #fff; color: #000; text-decoration: none; z-index: 10000; border-top-left-radius: 12px; border: 1px solid #fff;"> Vibe Jam 2025</a>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+            "three/addons/": "https://esm.run/three@0.165.0/examples/jsm/",
+            "@dimforge/rapier3d-compat": "https://esm.run/@dimforge/rapier3d-compat@0.13.1",
+            "nipplejs": "https://esm.run/nipplejs@0.10.1",
+             "@mlc-ai/web-llm": "https://esm.run/@mlc-ai/web-llm"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import RAPIER from '@dimforge/rapier3d-compat';
+        import nipplejs from 'nipplejs';
+        // LLM imports are conditional below
+
+        console.log("Initializing Abyss Game...");
+
+        // --- Configuration ---
+        const ARTIFACT_LIFETIME_MS = 10 * 60 * 1000; // 1 minute
+        const MAX_HISTORY_TOKENS = 3000; // Adjust based on LLM and performance
+        const LLM_PLAN_DURATION_S = 2.0; // How far ahead the LLM should plan actions
+        const PLAYER_MOVE_SPEED = 5.0;
+        const PLAYER_ROTATE_SPEED = 2.0;
+        const PLAYER_JUMP_IMPULSE = 7.0;
+        const MOUSE_SENSITIVITY = 0.002;
+
+        // --- Global State ---
+        let scene, camera, renderer, clock, physicsWorld, eventQueue;
+        let player = {
+            mesh: null,
+            body: null,
+            collider: null,
+            onGround: false,
+            artifacts: [], // Artifacts composing the player
+            velocity: new THREE.Vector3(),
+            inputVelocity: new THREE.Vector3(),
+            rotation: new THREE.Euler(0, 0, 0, 'YXZ'), // Use Euler for simpler rotation control
+            cameraTarget: new THREE.Vector3()
+        };
+        let artifacts = new Map(); // Map<id, { mesh, body, collider, soulId, creationTime, data: { name, description, isMeme, isLawRewriter, blessed, cursed } }>
+        let souls = new Map(); // Map<id, { desire, currentArtifactId, isUserSoul }>
+        let nextArtifactId = 0;
+        let nextSoulId = 0;
+        let gameTime = 0;
+        let llmEngine = null;
+        let llmEngineType = 'none'; // 'webllm', 'llmjs', 'openai', etc.
+        let llmIsLoading = false;
+        let llmIsReady = false;
+        let llmBusy = false;
+        let chatHistory = [];
+        let scheduledActions = []; // { time: gameTime + delay, action: 'spawn', details: {...} }
+        let availableTools = {}; // Store JS functions for tools
+        let toolSchemas = []; // Store JSON schemas for tools
+        let activeKeys = {};
+        let gamepad = null;
+        let moveJoystick = null;
+        let lookJoystick = null;
+        let touchLookDelta = { x: 0, y: 0 };
+
+        // DOM Elements
+        const messagesDiv = document.getElementById('messages');
+        const chatInput = document.getElementById('chat-input');
+        const chatSendButton = document.getElementById('chat-send');
+        const llmEngineSelect = document.getElementById('llm-engine-select');
+        const webllmOptions = document.getElementById('webllm-options');
+        const llmjsOptions = document.getElementById('llmjs-options');
+        const webllmModelSelect = document.getElementById('webllm-model-select');
+        const llmjsModelSelect = document.getElementById('llmjs-model-select');
+        const loadLlmButton = document.getElementById('load-llm-button');
+        const temperatureSlider = document.getElementById('temperature-slider');
+        const temperatureValue = document.getElementById('temperature-value');
+        const loadingStatusDiv = document.getElementById('loading-status');
+        const loadingProgressSpan = document.getElementById('loading-progress');
+        const canvasContainer = document.getElementById('canvas-container');
+
+        // --- Initialization ---
+
+        async function init() {
+            console.log("Starting initialization...");
+
+            // Basic Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a0a2a); // Dark purple abyss color
+            scene.fog = new THREE.Fog(0x1a0a2a, 10, 50);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.7, 5); // Slightly elevated start position
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            canvasContainer.appendChild(renderer.domElement);
+
+            clock = new THREE.Clock();
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x604080, 0.8); // Dim ambient abyss light
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffeedd, 1.5);
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            // Physics
+            await RAPIER.init();
+            const gravity = { x: 0.0, y: -9.81, z: 0.0 };
+            physicsWorld = new RAPIER.World(gravity);
+            eventQueue = new RAPIER.EventQueue(true);
+            console.log("Physics initialized.");
+
+            // Ground
+            const groundSize = 100;
+            const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x301040, roughness: 0.8, metalness: 0.2 });
+            const groundMesh = new THREE.Mesh(groundGeo, groundMat);
+            groundMesh.rotation.x = -Math.PI / 2;
+            groundMesh.receiveShadow = true;
+            scene.add(groundMesh);
+
+            let groundBodyDesc = RAPIER.RigidBodyDesc.fixed();
+            let groundColliderDesc = RAPIER.ColliderDesc.cuboid(groundSize / 2, 0.1, groundSize / 2);
+            physicsWorld.createCollider(groundColliderDesc, physicsWorld.createRigidBody(groundBodyDesc).handle);
+
+            // Player
+            const playerHeight = 1.5;
+            const playerRadius = 0.4;
+            const playerGeo = new THREE.CapsuleGeometry(playerRadius, playerHeight - 2 * playerRadius, 8, 16); // Visual representation
+            const playerMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.5 });
+            player.mesh = new THREE.Mesh(playerGeo, playerMat);
+            player.mesh.position.set(0, playerHeight / 2 + 0.1, 0); // Start slightly above ground
+            player.mesh.castShadow = true;
+            scene.add(player.mesh);
+
+            let playerBodyDesc = RAPIER.RigidBodyDesc.dynamic()
+                .setTranslation(player.mesh.position.x, player.mesh.position.y, player.mesh.position.z)
+                .setCanSleep(false) // Keep player active
+                .lockRotations(); // Prevent capsule from falling over
+            player.body = physicsWorld.createRigidBody(playerBodyDesc);
+
+            // IMPORTANT: Use capsule(), not capsuleY() if API changed or for compatibility
+             let playerColliderDesc = RAPIER.ColliderDesc.capsule(playerHeight / 2 - playerRadius, playerRadius) // Half-height is distance between sphere centers
+                 .setDensity(1.0)
+                 .setFriction(0.7)
+                 .setRestitution(0.1);
+            player.collider = physicsWorld.createCollider(playerColliderDesc, player.body.handle);
+            player.mesh.userData.physicsBody = player.body; // Link mesh and body
+
+            console.log("Player created.");
+
+             // Initial Game State Setup (placeholder - LLM should drive this)
+             createInitialArtifactsAndSouls(); // Add some starting elements
+
+             // Controls
+             initControls();
+             console.log("Controls initialized.");
+
+             // LLM Setup UI Listeners
+             setupLLMUI();
+             console.log("LLM UI setup.");
+
+             // Add default tool(s) - including the meta tool creator
+             addToolCreationTool();
+
+             console.log("Initialization complete. Starting game loop.");
+             // Start Game Loop
+             animate();
+        }
+
+        // --- Controls Initialization ---
+        function initControls() {
+            // Keyboard
+            window.addEventListener('keydown', (event) => { activeKeys[event.code] = true; });
+            window.addEventListener('keyup', (event) => { activeKeys[event.code] = false; });
+
+            // Mouse Look
+            canvasContainer.addEventListener('mousedown', (event) => {
+                if (event.button === 0) { // Left click
+                     canvasContainer.requestPointerLock();
+                     // Raycast for interaction on click
+                     interactRaycast(event);
+                 }
+            });
+            document.addEventListener('pointerlockchange', () => {
+                 if (document.pointerLockElement !== canvasContainer) {
+                     console.log('Pointer lock lost');
+                 }
+             });
+            document.addEventListener('mousemove', (event) => {
+                if (document.pointerLockElement === canvasContainer) {
+                    player.rotation.y -= event.movementX * MOUSE_SENSITIVITY;
+                    player.rotation.x -= event.movementY * MOUSE_SENSITIVITY;
+                    player.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, player.rotation.x)); // Clamp vertical look
+                }
+            });
+
+            // Touch Controls (NippleJS)
+            const moveZone = document.getElementById('joystick-move');
+            const lookZone = document.getElementById('joystick-look');
+
+            if ('ontouchstart' in window) { // Basic touch detection
+                try {
+                     moveJoystick = nipplejs.create({
+                        zone: moveZone,
+                        mode: 'static', // 'dynamic' or 'semi' might feel better
+                        position: { left: '50%', top: '50%' }, // Center within the zone
+                        color: 'white',
+                        size: 100, // Adjust size as needed
+                    });
+                     moveJoystick.on('move', (evt, data) => {
+                        if (data.vector) {
+                            player.inputVelocity.x = data.vector.x;
+                            player.inputVelocity.z = -data.vector.y; // NippleJS Y is screen Y (up/down) -> map to Z (forward/back)
+                        }
+                    }).on('end', () => {
+                         player.inputVelocity.x = 0;
+                         player.inputVelocity.z = 0;
+                     });
+
+                     lookJoystick = nipplejs.create({
+                         zone: lookZone,
+                         mode: 'static',
+                         position: { left: '50%', top: '50%' },
+                         color: 'white',
+                         size: 100,
+                     });
+                     lookJoystick.on('move', (evt, data) => {
+                         if (data.vector) {
+                             // Adjust sensitivity as needed
+                             const lookSensitivity = 0.03;
+                             touchLookDelta.x = -data.vector.x * lookSensitivity;
+                             touchLookDelta.y = -data.vector.y * lookSensitivity;
+                         }
+                     }).on('end', () => {
+                         touchLookDelta.x = 0;
+                         touchLookDelta.y = 0;
+                     });
+                 } catch (e) {
+                     console.error("Error initializing NippleJS:", e);
+                     // Hide joystick zones if init fails
+                     moveZone.style.display = 'none';
+                     lookZone.style.display = 'none';
+                 }
+            } else {
+                 // Hide joystick zones on non-touch devices
+                 moveZone.style.display = 'none';
+                 lookZone.style.display = 'none';
+                 document.getElementById('controls-container').style.display = 'none'; // Hide the whole container
+                 // Adjust chat/settings position if controls are hidden
+                 document.getElementById('chat-container').style.bottom = '50px'; // Or adjust based on settings height
+                 document.getElementById('settings-container').style.bottom = '10px';
+             }
+
+            // Gamepad
+            window.addEventListener('gamepadconnected', (event) => {
+                console.log('Gamepad connected:', event.gamepad.id);
+                gamepad = event.gamepad;
+            });
+            window.addEventListener('gamepaddisconnected', (event) => {
+                console.log('Gamepad disconnected:', event.gamepad.id);
+                if (gamepad && gamepad.index === event.gamepad.index) {
+                    gamepad = null;
+                }
+            });
+
+            // Window Resize
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+
+        // --- LLM Setup & Interaction ---
+
+        function setupLLMUI() {
+            llmEngineSelect.addEventListener('change', () => {
+                const selectedEngine = llmEngineSelect.value;
+                webllmOptions.style.display = selectedEngine === 'webllm' ? 'inline' : 'none';
+                llmjsOptions.style.display = selectedEngine === 'llmjs' ? 'inline' : 'none';
+                // Add similar logic for other engine options when implemented
+            });
+
+             loadLlmButton.addEventListener('click', loadLLM);
+
+             temperatureSlider.addEventListener('input', () => {
+                 temperatureValue.textContent = temperatureSlider.value;
+             });
+
+             chatSendButton.addEventListener('click', sendChatMessage);
+             chatInput.addEventListener('keypress', (e) => {
+                 if (e.key === 'Enter') {
+                     sendChatMessage();
+                 }
+             });
+         }
+
+        async function loadLLM() {
+             if (llmIsLoading || llmIsReady) {
+                 addMessage("System", "LLM is already loading or loaded.");
+                 return;
+             }
+             llmIsLoading = true;
+             loadingStatusDiv.style.display = 'block';
+             loadingProgressSpan.textContent = "Initializing...";
+             llmEngineType = llmEngineSelect.value;
+             const selectedTemp = parseFloat(temperatureSlider.value);
+
+             try {
+                 if (llmEngineType === 'webllm') {
+                     if (!navigator.gpu) {
+                         throw new Error("WebGPU is not available on this browser.");
+                     }
+                     const modelId = webllmModelSelect.value;
+                     console.log(`Loading WebLLM model: ${modelId}`);
+                     addMessage("System", `Loading WebLLM model: ${modelId}... This may take a while.`);
+
+                     // Dynamically import WebLLM only when needed
+                     const webllm = await import('@mlc-ai/web-llm');
+
+                      const reportProgress = (progress) => {
+                          // console.log("WebLLM Loading:", progress);
+                          loadingProgressSpan.textContent = `${(progress.progress * 100).toFixed(1)}% - ${progress.text}`;
+                      };
+
+                     llmEngine = await webllm.CreateMLCEngine(
+                         modelId,
+                         { initProgressCallback: reportProgress }
+                     );
+                     llmEngine.temperature = selectedTemp; // Store temperature for later use
+                     console.log("WebLLM Engine loaded.");
+                     addMessage("System", "WebLLM loaded successfully.");
+
+                 } else if (llmEngineType === 'llmjs') {
+                     const modelUrl = llmjsModelSelect.value;
+                     const modelFileName = modelUrl.split('/').pop(); // Get filename for display
+                     console.log(`Loading LLM.js model: ${modelFileName}`);
+                     addMessage("System", `Loading LLM.js model: ${modelFileName}... This may take a while (uses CPU).`);
+
+                     // Dynamically import LLM.js
+                     // Ensure llm.js/llm.js exists relative to your HTML file
+                     const { LLM } = await import('./llm.js/llm.js');
+
+                     const llmInstance = new LLM(
+                         'GGUF_CPU', // Type
+                         modelUrl,   // Model URL
+                         () => { // on_loaded
+                             console.log("LLM.js Model loaded.");
+                             llmIsReady = true;
+                             llmIsLoading = false;
+                             loadingStatusDiv.style.display = 'none';
+                             addMessage("System", "LLM.js loaded successfully.");
+                             // Trigger initial Abyss description or action
+                             triggerLlmGameTick("Initial state description");
+                         },
+                         (text) => { // write_result (handle partial results for streaming if enabled later)
+                              console.log("LLM.js Partial:", text);
+                              // For non-streaming, this might be called once with the full result
+                              // We handle the full result in run_complete for simplicity now
+                         },
+                         (fullResult) => { // run_complete
+                             console.log("LLM.js Full Result:", fullResult);
+                             handleLLMResponse(fullResult);
+                             llmBusy = false;
+                             // Potentially trigger next game tick if needed immediately
+                         }
+                     );
+                     llmEngine = llmInstance; // Store the instance
+                     llmEngine.temperature = selectedTemp; // Store temperature
+                     loadingProgressSpan.textContent = "Downloading/Initializing (CPU)..."; // No fine-grained progress here
+                     await llmEngine.load_worker(); // Start loading
+                     // Note: LLM.js uses a callback (on_loaded) for completion,
+                     // so we don't mark llmIsReady here immediately.
+
+                 } else if (llmEngineType === 'none') {
+                     throw new Error("Please select an LLM engine.");
+                 } else {
+                     // Placeholder for external APIs
+                     throw new Error(`Engine type "${llmEngineType}" not yet implemented.`);
+                 }
+
+                 // Common post-load steps (for engines that don't use callbacks like LLM.js)
+                 if (llmEngineType !== 'llmjs') {
+                    llmIsReady = true;
+                    llmIsLoading = false;
+                    loadingStatusDiv.style.display = 'none';
+                    // Trigger initial Abyss description or action
+                    triggerLlmGameTick("Initial state description");
+                 }
+
+             } catch (error) {
+                 console.error("LLM Loading Error:", error);
+                 addMessage("System", `Error loading LLM: ${error.message}`);
+                 llmIsLoading = false;
+                 llmIsReady = false;
+                 llmEngine = null;
+                 llmEngineType = 'none';
+                 loadingStatusDiv.style.display = 'none';
+                 llmEngineSelect.value = 'none'; // Reset dropdown
+                 webllmOptions.style.display = 'none';
+                 llmjsOptions.style.display = 'none';
+             }
+         }
+
+        function addTool(name, description, func, schema) {
+            console.log(`Adding tool: ${name}`);
+            if (availableTools[name]) {
+                 console.warn(`Tool "${name}" already exists. Overwriting.`);
+             }
+             availableTools[name] = func; // Store the actual JS function
+             // Remove existing schema if overwriting
+             toolSchemas = toolSchemas.filter(s => s.function.name !== name);
+             toolSchemas.push(schema); // Store the JSON schema for the prompt
+         }
+
+         // --- Tool: Tool Creation Tool ---
+         function addToolCreationTool() {
+             const toolName = "tool_creation_tool";
+             const toolDescription = "Creates a new tool available to the assistant. Takes a name, description, and javascript function body. The javascript function should accept a single object argument containing named parameters.";
+             const toolSchema = {
+                 type: "function",
+                 function: {
+                     name: toolName,
+                     description: toolDescription,
+                     parameters: {
+                         type: "object",
+                         properties: {
+                             name: { type: "string", description: "The name of the new tool function." },
+                             description: { type: "string", description: "A description of what the new tool does and its parameters." },
+                             javascript_code: { type: "string", description: "The body of the Javascript function. It will receive one argument: an object with named parameters. Example: '({ param1, param2 }) => { console.log(param1, param2); return `Processed ${param1}`; }'" }
+                             // We will dynamically generate the schema for the *new* tool based on its description later
+                         },
+                         required: ["name", "description", "javascript_code"]
+                     }
+                 }
+             };
+
+             const toolFunction = ({ name, description, javascript_code }) => {
+                 console.log(`Executing ${toolName}: creating tool "${name}"`);
+                 addMessage("System", `Attempting to create new tool: ${name}`);
+                 try {
+                     // *** SECURITY WARNING: eval() is dangerous! ***
+                     // In a real application, use a sandboxed environment or safer code generation/parsing.
+                     const newFunc = eval(javascript_code); // Evaluate the provided JS code string
+
+                     if (typeof newFunc !== 'function') {
+                         throw new Error("Provided code did not evaluate to a function.");
+                     }
+
+                     // TODO: Dynamically parse the 'description' or the JS code itself
+                     // to try and generate a parameter schema for the new tool.
+                     // This is complex. For now, we'll create a generic schema.
+                     const newToolSchema = {
+                         type: "function",
+                         function: {
+                             name: name,
+                             description: description, // Use the description provided by the LLM
+                             parameters: {
+                                 type: "object",
+                                 properties: {
+                                     // Add generic 'args' or try to infer from description later
+                                     params: { type: "object", description: "Parameters for the tool, structure depends on the tool's description." }
+                                 },
+                                 // Cannot reliably determine required fields without better parsing/schema generation
+                             }
+                         }
+                     };
+
+                     addTool(name, description, newFunc, newToolSchema);
+                     addMessage("System", `Successfully created and added tool: ${name}`);
+                     return `Tool "${name}" created successfully.`;
+
+                 } catch (e) {
+                     console.error(`Error creating tool "${name}":`, e);
+                     addMessage("System", `Error creating tool "${name}": ${e.message}`);
+                     return `Failed to create tool "${name}": ${e.message}`;
+                 }
+             };
+
+             addTool(toolName, toolDescription, toolFunction, toolSchema);
+         }
+
+         // --- LLM Prompting and Response Handling ---
+
+         function getToolSchemasForPrompt() {
+             // Format tool schemas into a string suitable for the prompt
+             // Using OpenAI's tool format as a basis, adapt as needed for Qwen prompting
+            // For custom implementation, JSON string might be simplest.
+             if (!toolSchemas || toolSchemas.length === 0) return "";
+
+            const formattedTools = toolSchemas.map(schema => schema.function); // Extract the 'function' part
+
+            // Return as a JSON string within a specific block or marker if needed
+            // Qwen might prefer a specific format - check its documentation if issues arise.
+            // Let's try simple JSON for now.
+            try {
+                 return "Available Tools:\n```json\n" + JSON.stringify(formattedTools, null, 2) + "\n```";
+             } catch (e) {
+                 console.error("Error stringifying tool schemas:", e);
+                 return "Available Tools: Error formatting tools.";
+             }
+         }
+
+
+        async function triggerLlmGameTick(reason = "Periodic update") {
+             if (!llmIsReady || llmBusy) return; // Don't overlap requests
+
+             console.log(`LLM Tick triggered: ${reason}`);
+             llmBusy = true;
+
+             // 1. Construct Prompt
+             //    - System/Instructions (as user message prefix)
+             //    - Tool Definitions (as assistant message prefix)
+             //    - Recent History (pruned)
+             //    - Current Game State Summary
+             //    - User Input/Trigger Reason
+
+             const temp = parseFloat(temperatureSlider.value);
+             const currentGameState = getCurrentGameStateSummary();
+             const toolDefs = getToolSchemasForPrompt();
+
+             // System Prompt (placed before user message, not in history)
+             // TODO: Refine this prompt significantly for better game mastering
+             const systemPrompt = `You are the Abyss, a vast, sentient entity controlling this 3D world.
+Your nature is greedy; what you create eventually returns to you (disassembles).
+You create Artifacts and Creatures based on the 'truth of desires' and 'balancing values', which can result in blessings or curses.
+Some artifacts are based on 'controversial memes' you perceive in the current state.
+Artifacts disassemble after about ${ARTIFACT_LIFETIME_MS / 1000} seconds. Souls inhabit artifacts matching their desires. Freed souls seek new artifacts.
+The user's avatar is also made of artifacts. Their soul is currently near an artifact that can rewrite your laws (ID: soul_user). Its desire is to control creation/destruction via this artifact.
+Respond to the user, manage the world state, and plan actions for the next ${LLM_PLAN_DURATION_S} seconds using available tools. Be descriptive and react to events.
+Current Game Time: ${gameTime.toFixed(1)}s.`;
+
+             // History (pruned) - Keep it concise
+             const prunedHistory = pruneHistory(chatHistory, MAX_HISTORY_TOKENS); // Implement pruneHistory
+
+             // Combine messages for the LLM
+             // Use ChatML format for LLM.js, adapt for WebLLM's expected input
+              let messages = [];
+
+              // Add history
+              messages.push(...prunedHistory);
+
+             // Add current context/trigger as the last user message
+             messages.push({
+                 role: "user",
+                 content: `Current State: ${currentGameState}\nReason for tick: ${reason}`
+             });
+
+             // Prepend System and Tool info (as per prompt instructions)
+             // This structure deviates from standard APIs but follows the prompt request
+             const fullPromptContent = `${systemPrompt}\n${toolDefs}\n\n${messages.map(m => `${m.role}: ${m.content}`).join('\n')}\nassistant:`; // Final prompt expecting assistant response
+
+
+            try {
+                console.log("Sending request to LLM...");
+                 addMessage("Abyss", "Thinking..."); // Placeholder message
+
+                if (llmEngineType === 'webllm') {
+                     // Construct the request for WebLLM's chat.completions.create
+                     const webLlmRequest = {
+                         messages: [
+                             // WebLLM doesn't have a strong concept of system prompt like OpenAI,
+                             // include it as part of the first user message or structure differently if needed.
+                             // Let's try putting system+tools before the actual history for this custom setup.
+                            { role: "user", content: `${systemPrompt}\n${toolDefs}` },
+                             ...prunedHistory,
+                            { role: "user", content: `Current State: ${currentGameState}\nReason for tick: ${reason}` }
+                         ],
+                         temperature: temp,
+                         stream: false, // As requested
+                         // No 'tools' or 'tool_choice' here, using custom parsing
+                     };
+                     // console.log("WebLLM Request:", JSON.stringify(webLlmRequest, null, 2)); // Debugging
+
+                     const result = await llmEngine.chat.completions.create(webLlmRequest);
+                    // console.log("WebLLM Result:", result); // Debugging
+                    if (result.choices && result.choices.length > 0) {
+                         const responseContent = result.choices[0].message.content;
+                         handleLLMResponse(responseContent);
+                     } else {
+                         throw new Error("LLM returned no response choice.");
+                     }
+
+                 } else if (llmEngineType === 'llmjs') {
+                    // Format for ChatML required by llm.js Qwen model
+                    let chatmlPrompt = "<|im_start|>system\n" + systemPrompt + "<|im_end|>\n";
+                     // Add tools definition - trying within system for ChatML structure
+                     // chatmlPrompt = "<|im_start|>system\n" + systemPrompt + "\n" + toolDefs + "<|im_end|>\n";
+
+                    // Or maybe add tools as an assistant preamble? This needs experimentation.
+                    // Let's try assistant preamble for tools as per prompt hint:
+                     chatmlPrompt += "<|im_start|>assistant\n" + toolDefs + "<|im_end|>\n";
+
+
+                    prunedHistory.forEach(msg => {
+                         chatmlPrompt += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
+                     });
+                     // Add the final user message for the current tick
+                     chatmlPrompt += `<|im_start|>user\n${currentGameState}\nReason for tick: ${reason}<|im_end|>\n`;
+                     chatmlPrompt += `<|im_start|>assistant\n`; // Prompt for assistant response
+
+                    // console.log("LLM.js Prompt:", chatmlPrompt); // Debugging
+                    llmEngine.run({
+                         prompt: chatmlPrompt,
+                         temperature: temp,
+                         // top_k: 40, // Optional parameters
+                         // top_p: 0.9,
+                         // n_predict: 512 // Limit generation length
+                     });
+                     // Response handled by the 'run_complete' callback in LLM.js setup
+                } else {
+                    // Handle other engines
+                     addMessage("System", "Selected LLM engine type not implemented for sending messages yet.");
+                    llmBusy = false;
+                }
+
+            } catch (error) {
+                 console.error("LLM Request Error:", error);
+                 addMessage("System", `LLM Error: ${error.message}. Retrying may be needed.`);
+                 llmBusy = false; // Allow retries or next tick
+                 // Implement retry logic if desired
+            }
+        }
+
+         function handleLLMResponse(responseText) {
+             console.log("LLM Raw Response:", responseText);
+             // Remove thinking message
+             const thinkingMsg = Array.from(messagesDiv.children).find(el => el.textContent.startsWith("Abyss: Thinking..."));
+             if(thinkingMsg) thinkingMsg.remove();
+
+            let currentText = responseText;
+             let toolCalls = [];
+
+             // --- Custom Tool Call Parsing ---
+             // Look for a pattern indicating a tool call, e.g., ```json ... ``` or function call syntax
+             // This needs to be robust based on how the LLM formats its intended calls.
+             // Let's assume it might use a JSON block for now.
+             const jsonBlockRegex = /```json\s*([\s\S]*?)\s*```/g;
+             let match;
+             while ((match = jsonBlockRegex.exec(responseText)) !== null) {
+                 const jsonString = match[1];
+                 try {
+                     const parsedJson = JSON.parse(jsonString);
+                    // Check if it matches the expected tool call structure (e.g., { tool_name: "...", arguments: {...} })
+                    // Or maybe it directly outputs the schema format? { function: { name: "...", arguments: "{...}" } }
+                     // Let's assume a simpler format first: { "tool_name": "...", "arguments": {...} }
+                     if (parsedJson.tool_name && parsedJson.arguments && availableTools[parsedJson.tool_name]) {
+                        console.log(`Detected tool call: ${parsedJson.tool_name}`);
+                        toolCalls.push({
+                            name: parsedJson.tool_name,
+                            args: parsedJson.arguments
+                        });
+                         // Remove the block from the text to display
+                         currentText = currentText.replace(match[0], "").trim();
+                     }
+                     // Handle potential alternative: outputting the function call structure from schema
+                     else if (parsedJson.function && parsedJson.function.name && parsedJson.function.arguments && availableTools[parsedJson.function.name]) {
+                         console.log(`Detected tool call (schema format): ${parsedJson.function.name}`);
+                         try {
+                              // Arguments might be a JSON *string* within the structure
+                              const argsObject = JSON.parse(parsedJson.function.arguments);
+                              toolCalls.push({
+                                  name: parsedJson.function.name,
+                                  args: argsObject
+                              });
+                              currentText = currentText.replace(match[0], "").trim();
+                          } catch (e) {
+                              console.warn("Could not parse arguments string for tool call:", parsedJson.function.arguments, e);
+                          }
+                     }
+
+                 } catch (e) {
+                     console.warn("Could not parse suspected JSON block:", jsonString, e);
+                 }
+             }
+
+             // --- Execute Tools ---
+             let toolResults = [];
+             if (toolCalls.length > 0) {
+                 addMessage("System", `Executing ${toolCalls.length} tool(s)...`);
+                 for (const call of toolCalls) {
+                     const toolFunc = availableTools[call.name];
+                     if (toolFunc) {
+                         try {
+                             const result = toolFunc(call.args); // Execute the JS function
+                             toolResults.push({ tool_name: call.name, result: result });
+                             addMessage("System", `Tool ${call.name} executed.`); // Optionally show result
+                         } catch (e) {
+                             console.error(`Error executing tool ${call.name}:`, e);
+                             addMessage("System", `Error in tool ${call.name}: ${e.message}`);
+                             toolResults.push({ tool_name: call.name, result: `Error: ${e.message}` });
+                         }
+                     }
+                 }
+                 // TODO: Decide if we need to send tool results back to the LLM for a final answer.
+                 // For a game loop, maybe just executing the action is enough.
+                 // If the LLM needs confirmation or follow-up, a second call would be needed here.
+             }
+
+             // --- Add LLM's narrative response to chat ---
+             if (currentText) {
+                 addMessage("Abyss", currentText);
+                 chatHistory.push({ role: "assistant", content: currentText }); // Add assistant's text response to history
+                 // We are *not* adding the tool calls or their results to the main chat history
+                 // to avoid clutter and because the tool definitions are re-sent each time.
+             }
+
+             // --- Parse for Scheduled Actions ---
+             // The LLM response text (or tool results) should contain instructions
+             // for actions like spawning artifacts, moving souls, etc., possibly with delays.
+             // This requires more sophisticated parsing or a dedicated tool.
+             // Example: LLM might say "Spawn a 'Meme of Distraction' artifact near the player in 1 second."
+             // Or a tool call result might return structured action data.
+             // For now, let's assume tools directly modify the game state or schedule actions.
+             // The `tool_creation_tool` modifies `availableTools`. Other tools need to be created.
+
+             // Example placeholder for a spawning tool (needs to be created by LLM first!)
+             if (!availableTools["spawn_artifact"]) {
+                 // Maybe add a default spawn tool for bootstrapping?
+                 // addTool('spawn_artifact', 'Creates an artifact in the world.', ...)
+             }
+
+
+             llmBusy = false; // Ready for next tick/input
+             // Consider triggering another tick if needed immediately after processing.
+         }
+
+
+        function getCurrentGameStateSummary() {
+             // Create a concise text summary of the game state for the LLM
+             let summary = `Player Position: ${player.mesh.position.x.toFixed(1)}, ${player.mesh.position.y.toFixed(1)}, ${player.mesh.position.z.toFixed(1)}.`;
+             summary += ` Player Artifacts: ${player.artifacts.length}.`; // TODO: Add details if needed
+             summary += ` World Artifacts: ${artifacts.size}.`;
+
+             const nearbyArtifacts = [];
+             const checkRadius = 20; // How far to check for nearby artifacts
+             for (const [id, artifact] of artifacts.entries()) {
+                 if (artifact.mesh.position.distanceTo(player.mesh.position) < checkRadius) {
+                     nearbyArtifacts.push(`ID ${id}: ${artifact.data.name} ${artifact.soulId ? '(Inhabited by soul ' + artifact.soulId + ')' : '(Empty)'}`);
+                 }
+             }
+             if (nearbyArtifacts.length > 0) {
+                 summary += ` Nearby Artifacts: ${nearbyArtifacts.join(', ')}.`;
+             } else {
+                 summary += " No artifacts nearby.";
+             }
+
+             // Add info about user soul's location/state
+             const userSoul = souls.get('soul_user');
+             if (userSoul) {
+                 summary += ` User Soul (soul_user): Desire = Rewrite Laws. Currently inhabiting artifact ID ${userSoul.currentArtifactId || 'None'}.`;
+             }
+
+             // TODO: Add creature info, Abyss "controversy" state, etc.
+             return summary;
+         }
+
+        function pruneHistory(history, maxTokens) {
+             // Simple pruning: just keep the last N messages.
+             // A better approach would estimate token count and prune based on that.
+             const maxMessages = 20; // Keep last 10 pairs (user/assistant) roughly
+             if (history.length > maxMessages) {
+                 console.log(`Pruning history from ${history.length} to ${maxMessages} messages.`);
+                 return history.slice(-maxMessages);
+             }
+             return history;
+         }
+
+
+        function sendChatMessage() {
+             const message = chatInput.value.trim();
+             if (!message || !llmIsReady || llmBusy) {
+                if(!llmIsReady) addMessage("System", "LLM not ready.");
+                if(llmBusy) addMessage("System", "LLM is busy.");
+                 return;
+             }
+
+             addMessage("You", message);
+             chatHistory.push({ role: "user", content: message });
+             chatInput.value = "";
+
+             // Trigger LLM response based on user chat
+             triggerLlmGameTick(`User chat: ${message}`);
+         }
+
+        function addMessage(sender, text) {
+            // Add message to the top of the div (visually appears at bottom due to flex-direction: column-reverse)
+            const messageElement = document.createElement('div');
+            messageElement.innerHTML = `<b>${sender}:</b> ${text}`; // Use innerHTML to allow basic formatting if needed
+            messagesDiv.insertBefore(messageElement, messagesDiv.firstChild); // Add to top of div element
+
+            // Limit number of messages displayed
+            const maxMessages = 50;
+             while (messagesDiv.children.length > maxMessages) {
+                 messagesDiv.removeChild(messagesDiv.lastChild); // Remove oldest from the bottom
+             }
+        }
+
+
+        // --- Game Logic: Artifacts, Souls, Physics Update ---
+
+         function createInitialArtifactsAndSouls() {
+             // Create the Law Rewriter artifact
+             const lawRewriterData = {
+                 name: "Tome of Unmaking",
+                 description: "An artifact pulsing with potential energy. It seems capable of altering the very rules of the Abyss.",
+                 isMeme: false,
+                 isLawRewriter: true,
+                 blessed: true, // Or potentially cursed depending on perspective?
+                 cursed: false,
+             };
+             const lawRewriterArtifact = createArtifact(new THREE.Vector3(5, 0.5, 0), lawRewriterData);
+
+             // Create the user's soul and link it
+             const userSoulId = 'soul_user';
+             souls.set(userSoulId, {
+                 desire: "Rewrite Abyss Laws",
+                 currentArtifactId: lawRewriterArtifact.id,
+                 isUserSoul: true
+             });
+             artifacts.get(lawRewriterArtifact.id).soulId = userSoulId;
+             console.log(`User soul ${userSoulId} created and inhabiting artifact ${lawRewriterArtifact.id}`);
+             addMessage("Abyss", "Your soul awakens within the Tome of Unmaking...");
+
+
+             // Create a controversial meme artifact (LLM should generate this)
+             const memeData = {
+                 name: "Meme: Perpetual Loading Icon",
+                 description: "Represents the infinite wait for true understanding in the Abyss. Mildly annoying.",
+                 isMeme: true,
+                 isLawRewriter: false,
+                 blessed: false,
+                 cursed: true, // Cursed by annoyance
+             };
+             createArtifact(new THREE.Vector3(-3, 0.5, 2), memeData);
+
+            // Create a simple soul
+             const simpleSoulId = nextSoulId++;
+             souls.set(simpleSoulId, {
+                 desire: "Simple Stability", // This soul wants a non-meme artifact
+                 currentArtifactId: null,
+                 isUserSoul: false
+             });
+             addMessage("Abyss", "A lost soul seeking stability appears...");
+            // LLM should later direct this soul to a suitable artifact when one appears.
+         }
+
+
+        function createArtifact(position, data) {
+             const id = nextArtifactId++;
+             console.log(`Creating artifact ${id}: ${data.name} at ${position.x}, ${position.y}, ${position.z}`);
+
+             // Visual representation (vary based on type?)
+             let geometry;
+             let color = 0xaaaaaa;
+             if (data.isLawRewriter) {
+                 geometry = new THREE.IcosahedronGeometry(0.4, 0);
+                 color = 0xffd700; // Gold
+             } else if (data.isMeme) {
+                 geometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+                 color = 0xff69b4; // Hot pink for memes?
+             } else {
+                 geometry = new THREE.SphereGeometry(0.3, 16, 8);
+                 color = 0x00ced1; // Dark turquoise
+             }
+             const material = new THREE.MeshStandardMaterial({
+                 color: color,
+                 roughness: 0.6,
+                 metalness: 0.3,
+                 emissive: data.blessed ? color : (data.cursed ? 0xff0000 : 0x000000), // Glow if blessed/cursed
+                 emissiveIntensity: data.blessed || data.cursed ? 0.5 : 0
+             });
+             const mesh = new THREE.Mesh(geometry, material);
+             mesh.position.copy(position);
+             mesh.castShadow = true;
+             mesh.receiveShadow = true;
+             mesh.userData.isInteractable = true; // Mark for raycasting
+             mesh.userData.artifactId = id;
+             scene.add(mesh);
+
+             // Physics body
+             let bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+                .setTranslation(position.x, position.y, position.z)
+                 .setLinearDamping(0.5) // Make them settle
+                 .setAngularDamping(0.5);
+             const body = physicsWorld.createRigidBody(bodyDesc);
+
+             let colliderDesc;
+            // Match collider shape to geometry approximately
+             if (geometry instanceof THREE.BoxGeometry) {
+                 colliderDesc = RAPIER.ColliderDesc.cuboid(geometry.parameters.width / 2, geometry.parameters.height / 2, geometry.parameters.depth / 2);
+             } else if (geometry instanceof THREE.SphereGeometry) {
+                 colliderDesc = RAPIER.ColliderDesc.ball(geometry.parameters.radius);
+             } else if (geometry instanceof THREE.IcosahedronGeometry) {
+                 // Approximate with a ball for simplicity
+                 colliderDesc = RAPIER.ColliderDesc.ball(geometry.parameters.radius * 0.8); // Icosahedron is smaller than bounding sphere
+             } else {
+                 colliderDesc = RAPIER.ColliderDesc.ball(0.3); // Default fallback
+             }
+             colliderDesc.setDensity(1.0).setRestitution(0.3).setFriction(0.7);
+             const collider = physicsWorld.createCollider(colliderDesc, body.handle);
+
+             mesh.userData.physicsBody = body; // Link mesh and body
+
+             const artifact = {
+                 id: id,
+                 mesh: mesh,
+                 body: body,
+                 collider: collider,
+                 soulId: null,
+                 creationTime: Date.now(),
+                 data: data
+             };
+             artifacts.set(id, artifact);
+             return artifact; // Return the created artifact object
+         }
+
+         function disassembleArtifact(id) {
+             const artifact = artifacts.get(id);
+             if (!artifact) return;
+
+             console.log(`Disassembling artifact ${id}: ${artifact.data.name}`);
+             addMessage("Abyss", `${artifact.data.name} dissolves back into the Abyss...`);
+
+
+             // Free the soul if one was inhabiting it
+             if (artifact.soulId !== null) {
+                 const soul = souls.get(artifact.soulId);
+                 if (soul) {
+                     console.log(`Soul ${artifact.soulId} freed from artifact ${id}.`);
+                     soul.currentArtifactId = null;
+                      addMessage("Abyss", `Soul ${artifact.soulId} seeks a new vessel...`);
+                     // LLM should decide where the soul goes next (trigger LLM tick?)
+                     triggerLlmGameTick(`Soul ${artifact.soulId} freed, needs new artifact.`);
+                 }
+             }
+
+             // Remove from scene and physics world
+             scene.remove(artifact.mesh);
+             physicsWorld.removeCollider(artifact.collider, false); // false = don't wake bodies
+             physicsWorld.removeRigidBody(artifact.body);
+             artifacts.delete(id);
+
+            // Dispose geometry/material? Maybe not strictly needed if they might be reused
+            // artifact.mesh.geometry.dispose();
+            // artifact.mesh.material.dispose();
+         }
+
+        function updatePhysics(deltaTime) {
+            // Apply input forces/velocities
+            handleMovement(deltaTime);
+
+            // Step physics world
+             physicsWorld.step(eventQueue); // Use event queue if handling collisions
+
+             // Handle collision events (e.g., player landing)
+             player.onGround = false; // Assume not on ground unless collision detected
+             eventQueue.drainCollisionEvents((handle1, handle2, started) => {
+                let body1 = physicsWorld.getRigidBody(physicsWorld.getCollider(handle1).parent());
+                let body2 = physicsWorld.getRigidBody(physicsWorld.getCollider(handle2).parent());
+
+                 // Simple ground check: Check if player collider (handle1 or handle2) contacts something below it
+                 const playerHandle = player.collider.handle;
+                 let playerBody = null;
+                 let otherHandle = -1;
+
+                 if (handle1 === playerHandle) {
+                     playerBody = body1;
+                     otherHandle = handle2;
+                 } else if (handle2 === playerHandle) {
+                     playerBody = body2;
+                     otherHandle = handle1;
+                 }
+
+                 if (playerBody && started) {
+                     // Check contact normals to see if it's below the player
+                     physicsWorld.contactPair(physicsWorld.getCollider(playerHandle), physicsWorld.getCollider(otherHandle), (manifold, flipped) => {
+                        // Check contact normals
+                         for (let i = 0; i < manifold.numContacts(); i++) {
+                            const contactNormal = flipped ? manifold.normal(i) : {x: -manifold.normal(i).x, y: -manifold.normal(i).y, z: -manifold.normal(i).z };
+                             // If contact normal points upwards significantly, consider player on ground
+                             if (contactNormal.y > 0.7) {
+                                 player.onGround = true;
+                                 return; // Exit loop once ground contact is confirmed
+                             }
+                         }
+                     });
+                 }
+             });
+
+
+            // Update Three.js positions from physics bodies
+             player.mesh.position.copy(player.body.translation());
+             player.mesh.quaternion.copy(player.body.rotation()); // Keep mesh rotation aligned if body rotation wasn't locked
+
+             for (const artifact of artifacts.values()) {
+                if(artifact.body && artifact.mesh){ // Check if exists before accessing
+                    artifact.mesh.position.copy(artifact.body.translation());
+                    artifact.mesh.quaternion.copy(artifact.body.rotation());
+                }
+            }
+        }
+
+         function handleMovement(deltaTime) {
+             // --- Read Inputs (Keyboard, Gamepad, Touch) ---
+             let moveForward = 0;
+             let moveRight = 0;
+             let lookUp = 0;
+             let lookRight = 0;
+             let jump = false;
+
+            // Keyboard
+             if (activeKeys['KeyW'] || activeKeys['ArrowUp']) moveForward += 1;
+             if (activeKeys['KeyS'] || activeKeys['ArrowDown']) moveForward -= 1;
+             if (activeKeys['KeyA'] || activeKeys['ArrowLeft']) moveRight -= 1;
+             if (activeKeys['KeyD'] || activeKeys['ArrowRight']) moveRight += 1;
+             if (activeKeys['Space']) jump = true;
+
+            // Touch Joystick (Move)
+            // NippleJS vector is relative to joystick center
+            if (moveJoystick && player.inputVelocity.lengthSq() > 0.01) { // Check if joystick is active
+                 const moveStrength = player.inputVelocity.length(); // Use magnitude for speed scaling
+                 const angle = Math.atan2(player.inputVelocity.x, player.inputVelocity.z); // Angle relative to player's forward Z
+
+                 // Decompose joystick input into forward/right relative to player view
+                 // This decomposition seems off, let's rethink. The inputVelocity IS the desired world-space direction relative to screen orientation.
+                 // We need to rotate this vector by the camera's Y rotation.
+
+                 // Let's use the raw inputVelocity directly for direction, scaled by speed
+                 // The NippleJS setup already maps screen Y -> -Z, screen X -> X
+                 moveForward = -player.inputVelocity.z; // Forward/Backward based on joystick Y
+                 moveRight = player.inputVelocity.x;    // Left/Right based on joystick X
+            }
+
+            // Touch Joystick (Look)
+             if (lookJoystick && (Math.abs(touchLookDelta.x) > 0.001 || Math.abs(touchLookDelta.y) > 0.001)) {
+                 lookRight += touchLookDelta.x;
+                 lookUp += touchLookDelta.y; // NippleJS Y maps directly to look up/down
+             }
+
+             // Gamepad (Check if connected and has standard mapping)
+             const gamepads = navigator.getGamepads();
+             gamepad = gamepads[0]; // Use the first connected gamepad
+             if (gamepad && gamepad.mapping === 'standard') {
+                 // Axes[0]: Left Stick X (-1 left, 1 right)
+                 // Axes[1]: Left Stick Y (-1 up, 1 down) -> Map to forward/backward
+                 // Axes[2]: Right Stick X (-1 left, 1 right) -> Map to look left/right
+                 // Axes[3]: Right Stick Y (-1 up, 1 down) -> Map to look up/down
+                 // Buttons[0]: A/Cross (Jump)
+
+                 const leftStickX = Math.abs(gamepad.axes[0]) > 0.1 ? gamepad.axes[0] : 0;
+                 const leftStickY = Math.abs(gamepad.axes[1]) > 0.1 ? gamepad.axes[1] : 0;
+                 const rightStickX = Math.abs(gamepad.axes[2]) > 0.15 ? gamepad.axes[2] : 0; // Higher deadzone for look
+                 const rightStickY = Math.abs(gamepad.axes[3]) > 0.15 ? gamepad.axes[3] : 0;
+
+                 moveForward -= leftStickY; // Invert Y axis
+                 moveRight += leftStickX;
+                 lookRight += rightStickX * PLAYER_ROTATE_SPEED * 2 * deltaTime; // Scale look speed for gamepad
+                 lookUp -= rightStickY * PLAYER_ROTATE_SPEED * 2 * deltaTime; // Invert Y axis and scale
+
+                 if (gamepad.buttons[0].pressed) jump = true;
+             }
+
+
+             // --- Apply Look Rotation ---
+             // Apply mouse/touch/gamepad look rotation delta
+             if (!document.pointerLockElement) { // Only apply non-mouse look if pointer isn't locked
+                player.rotation.y += lookRight; // lookRight is already scaled by time for gamepad/touch
+                player.rotation.x += lookUp;
+                player.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, player.rotation.x)); // Clamp vertical look
+             }
+             // Update camera rotation based on player Euler rotation
+             camera.rotation.copy(player.rotation);
+
+
+             // --- Calculate Movement Direction ---
+             const moveDirection = new THREE.Vector3(moveRight, 0, moveForward);
+             moveDirection.normalize();
+             moveDirection.applyEuler(camera.rotation); // Rotate move vector by camera orientation
+             moveDirection.y = 0; // Keep movement horizontal
+
+
+            // --- Apply Movement Forces/Velocity ---
+            const currentVelocity = player.body.linvel();
+            const targetVelocity = new THREE.Vector3(
+                 moveDirection.x * PLAYER_MOVE_SPEED,
+                 currentVelocity.y, // Keep vertical velocity for gravity/jump
+                 moveDirection.z * PLAYER_MOVE_SPEED
+             );
+
+            // Apply velocity change (using impulse or direct velocity setting)
+            // Direct velocity setting can feel more responsive for player characters
+            player.body.setLinvel({ x: targetVelocity.x, y: targetVelocity.y, z: targetVelocity.z }, true);
+
+            // --- Apply Jump ---
+             if (jump && player.onGround) {
+                 // Apply an upward impulse
+                 player.body.applyImpulse({ x: 0, y: PLAYER_JUMP_IMPULSE, z: 0 }, true);
+                 player.onGround = false; // Prevent multi-jump frames
+             }
+
+            // Update camera position to follow player smoothly
+             const desiredCameraPosition = new THREE.Vector3();
+             player.mesh.getWorldPosition(desiredCameraPosition); // Get world position of the player mesh center
+             desiredCameraPosition.y += 0.1; // Slightly above the mesh center (adjust as needed)
+
+            // Add a slight offset behind the player if desired (3rd person)
+             // const cameraOffset = new THREE.Vector3(0, 0.5, 3); // Example offset x, y, z relative to player rotation
+             // cameraOffset.applyEuler(player.rotation);
+             // desiredCameraPosition.add(cameraOffset);
+
+            // Smooth camera follow (lerp)
+             camera.position.lerp(desiredCameraPosition, 0.1); // Adjust lerp factor for smoothness
+
+            // Make camera look slightly ahead or at a target point if needed
+             // player.cameraTarget.set(0, 0, -5).applyEuler(player.rotation).add(camera.position);
+             // camera.lookAt(player.cameraTarget);
+            // For FPS, just setting camera rotation to player rotation is usually sufficient.
+         }
+
+         // --- Interaction ---
+         function interactRaycast(event) {
+             if(!llmIsReady) {
+                 addMessage("System", "Cannot interact: LLM not ready.");
+                 return; // Don't interact if LLM isn't running
+             }
+
+             const raycaster = new THREE.Raycaster();
+             // Use camera direction for interaction when pointer is locked, mouse position otherwise?
+             // For simplicity, let's always use camera center for now.
+             const pointer = new THREE.Vector2(0, 0); // Center of screen
+
+            raycaster.setFromCamera(pointer, camera);
+
+             const interactableObjects = Array.from(artifacts.values()).map(a => a.mesh).filter(m => m.userData.isInteractable);
+             const intersects = raycaster.intersectObjects(interactableObjects);
+
+             if (intersects.length > 0) {
+                 const intersectedMesh = intersects[0].object;
+                 const artifactId = intersectedMesh.userData.artifactId;
+                 const artifact = artifacts.get(artifactId);
+
+                 if (artifact) {
+                     console.log(`Interacted with artifact ${artifactId}: ${artifact.data.name}`);
+                     addMessage("You", `*You examine ${artifact.data.name}*`);
+                     // Trigger LLM response based on interaction
+                     triggerLlmGameTick(`User interacted with artifact ${artifactId}: ${artifact.data.name} (${artifact.data.description}) ${artifact.soulId ? 'Inhabited by soul '+artifact.soulId : ''}`);
+                 }
+             }
+         }
+
+        // --- Sound (Simple Web Audio) ---
+        let audioCtx;
+        function initAudio() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                 console.log("AudioContext initialized.");
+            } catch(e) {
+                 console.warn("Web Audio API is not supported in this browser.", e);
+                 addMessage("System", "Warning: Sound effects disabled (Web Audio not supported).");
+            }
+        }
+        function playSound(type = 'click', volume = 0.3, duration = 0.1) {
+             if (!audioCtx) return;
+             const oscillator = audioCtx.createOscillator();
+             const gainNode = audioCtx.createGain();
+
+             oscillator.connect(gainNode);
+             gainNode.connect(audioCtx.destination);
+
+             gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+             gainNode.gain.linearRampToValueAtTime(volume, audioCtx.currentTime + 0.01); // Quick attack
+
+             switch(type) {
+                 case 'spawn':
+                     oscillator.type = 'sine';
+                     oscillator.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
+                     oscillator.frequency.linearRampToValueAtTime(880, audioCtx.currentTime + duration * 0.8); // Rise
+                     break;
+                 case 'disassemble':
+                      oscillator.type = 'sawtooth';
+                      oscillator.frequency.setValueAtTime(220, audioCtx.currentTime); // A3
+                      oscillator.frequency.exponentialRampToValueAtTime(55, audioCtx.currentTime + duration); // Fall sharply
+                      volume *= 0.7; // Quieter
+                      break;
+                 case 'interact':
+                      oscillator.type = 'triangle';
+                      oscillator.frequency.setValueAtTime(660, audioCtx.currentTime); // E5
+                      duration = 0.05;
+                      volume *= 0.5;
+                      break;
+                 case 'error':
+                      oscillator.type = 'square';
+                      oscillator.frequency.setValueAtTime(110, audioCtx.currentTime); // A2
+                      duration = 0.2;
+                      volume *= 0.6;
+                      break;
+                 default: // 'click'
+                     oscillator.type = 'sine';
+                     oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+                     duration = 0.05;
+                     volume *= 0.4;
+             }
+
+             gainNode.gain.setValueAtTime(volume, audioCtx.currentTime + 0.01);
+             gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration); // Decay
+
+             oscillator.start(audioCtx.currentTime);
+             oscillator.stop(audioCtx.currentTime + duration);
+         }
+
+
+        // --- Main Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const deltaTime = clock.getDelta();
+            gameTime += deltaTime;
+
+             // Execute scheduled actions from LLM plan
+             let i = scheduledActions.length;
+             while (i--) {
+                 const action = scheduledActions[i];
+                 if (gameTime >= action.time) {
+                     try {
+                         console.log(`Executing scheduled action: ${action.action}`);
+                         // TODO: Implement action execution logic based on action.action and action.details
+                         // Example: if (action.action === 'spawn') createArtifact(action.details.position, action.details.data);
+                         // Example: if (action.action === 'moveSoul') { ... logic ... }
+                     } catch(e) {
+                         console.error("Error executing scheduled action:", action, e);
+                         playSound('error');
+                     }
+                     scheduledActions.splice(i, 1); // Remove executed action
+                 }
+             }
+
+
+            // Check for artifact disassembly
+             const now = Date.now();
+             for (const [id, artifact] of artifacts.entries()) {
+                 if (now - artifact.creationTime > ARTIFACT_LIFETIME_MS) {
+                     disassembleArtifact(id);
+                     playSound('disassemble');
+                 }
+             }
+
+             // Update physics simulation and sync visual elements
+             updatePhysics(deltaTime);
+
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Start Everything ---
+        initAudio(); // Initialize sound system first
+        init(); // Setup scene, physics, controls, start loop
+
+    </script>
+</body>
+</html>
