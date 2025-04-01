@@ -8,7 +8,7 @@ make game, like made in abyss, where abyss creates artifacts and creatures, depe
 include 2025 Vibe Coding Game Jam participation note:
 <a target="_blank" href="https://jam.pieter.com" style="font-family: 'system-ui', sans-serif; position: fixed; bottom: -1px; right: -1px; padding: 7px; font-size: 14px; font-weight: bold; background: #fff; color: #000; text-decoration: none; z-index: 10; border-top-left-radius: 12px; z-index: 10000; border: 1px solid #fff;"> Vibe Jam 2025</a>
 
-this is for jam so only include most playable featured but fully implement them all. as by jam rules game must be fully playable instantly without loading screen, then some content should be precreated by some world creation starting script which will like emulate abyss tool calls for artifact creation, and turn on/of/switch llm ability should be optional. so do not delay any how gameplay by llm existence. llm should only add additional features when enabled, and should be easy disabled/reanabled/switched without interruption or pause for gameplay. controversial meme means create artifact with existing ability or create by tool_creation_tool new ability for artifact and artifact which will provide some social resolution which will push technological progress for sure but may be socially controversial but as social technology it will be meme. make user guarantee to have at start movement and vision artifacts.
+this is for jam so only include most playable featured but fully implement them all. as by jam rules game must be fully playable instantly without loading screen, then some content should be precreated by some world creation starting script which will like emulate abyss tool calls for artifact creation, and turn on/of/switch llm ability should be optional. so do not delay any how gameplay by llm existence. llm should only add additional features when enabled, and should be easy disabled/reanabled/switched without interruption or pause for gameplay. controversial meme means create artifact with existing ability or create by tool_creation_tool new ability for artifact and artifact which will provide some social resolution which will push technological progress for sure but may be socially controversial but as social technology it will be meme. make user guarantee to have at start movement and vision artifacts. for DeepSeek-R1 versions maybe make them generate custom tool request immediately after tag <think></think>.
 
 add llm chat with custom tool calling, as native tool calling not yet supported in webllm for qwen.
 to use web-llm.
@@ -22,7 +22,8 @@ llmEngine = await webllm.CreateMLCEngine(
 don't use appConfig.
 with reportProgress use progress.progress if needed.
 use engine.chat.completions.create but without its native tools feature, instead use custom tools, stream: false, also set temperature in it.
-make ability to switch between Qwen2.5-Coder-7B-Instruct-q4f32_1-MLC and Qwen2.5-Coder-3B-Instruct-q4f32_1-MLC, and set temperature of generation. make ability to choose qwen model size before load any of it.
+make ability to switch between Qwen2.5-Coder-7B-Instruct-q4f32_1-MLC and Qwen2.5-Coder-3B-Instruct-q4f32_1-MLC, DeepSeek-R1-Distill-Qwen-7B-q4f32_1-MLC, and set temperature of generation. make ability to choose qwen model size before load any of it.
+DeepSeek-R1 has tag <think></think> at start.
 
 add ability to use llm.js for who not have webgpu.
 add ability to use external apis openai, gemini, claude, ollama or other when you know how to add them for who not have local powerful hardware. 
@@ -31,16 +32,20 @@ add in llm tools list for chatbot llm tool_creation_tool with parameters 'name' 
 
 don't use role 'system', instead place info every time before last user message but don't include in history. don't use role tool, last message to llm must be from role user.
 
-initialize after all elements created. make comments in console.log.
+initialize after all elements created. make comments in console.log. separate in log what for with llm mode and without llm mode.
 
 for llm.js:
 use one of
 https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf
 https://huggingface.co/unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
 https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf
+https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf
+https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf
+https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
 with llm.js qwen2.5 use ChatML template
 import exact "./llm.js/llm.js", it is on local server location
 it is from https://github.com/rahuldshetty/llm.js
+DeepSeek-R1 has tag <think></think> at start, and <｜User｜> and <｜Assistant｜> tokens chat template formatter.
 
 here example of Quick Start:
 // Import LLM app
