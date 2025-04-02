@@ -2,6 +2,8 @@
 
 https://neuroidss.github.io/Abyss-Arena
 
+![llm optionaly rules 3d game](https://github.com/neuroidss/Abyss-Arena/blob/main/Screencast_from_2025-04-02_01-31-12.gif?raw=true)
+
 ```
 make all happen on arena so not able to fall out of border. and make artifact abilities to fight on arena, close range attack more powerful, long range attack less powerful. player body and soul should be processed on engine level same as other creatures, so to make ability later to add other players to make mmorpg. for llm disable mode maybe souls will have desire to see and then will have autoagreement from abyss to inhabitate nearest see ability artifact and then know where is move ability artifact and ask to use abyss ability to move get autoagreement and crawl slowly to nearest move ability artifact, and then look and move to get fight ability artifacts. on attack will be destroyed each artifact separately. when player found and assembly with tool_creation_tool ability artifact ask him for example to use whis new tool_creation_tool ability artifact by inventing new llm abyss tool which will be new artifact ability, and then when abyss will create artifact with this new ability player if found where this new artifact was created also could assemble with it and use its new artifact ability which player created.
 
