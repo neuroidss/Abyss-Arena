@@ -106,3 +106,14 @@ console.log('Waiting...')
 }
 }
 ```
+
+```
+this time enabled your internet search function so you can search something for your inspiration on how to fix this game
+
+ok, maybe add ability to run demo mode where all features will be tested in realtime, so i will record video and send to you so you will see how all implemented by you features work, for improvement
+
+can you also add auto ability to record video, and after end of demo i will send result to you. maybe there will be additional recorded debug data that will be helpful for you, or maybe not video but another format or several debug files, as you wish. i can later create tool call for your chat so you could automatically test game in this way
+
+now add all found improvements into new game single html block so i will upload new game version on github
+```
+
