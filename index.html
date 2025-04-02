@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Abyss Arena</title>
+    <title>Abyss Arena - Dev Build</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #111; color: #fff; font-family: 'system-ui', sans-serif; }
         canvas { display: block; }
@@ -28,8 +28,10 @@
              color: #eee;
              font-size: 14px;
              border-bottom: 1px solid #444;
+             scrollbar-width: thin;
+             scrollbar-color: #555 #333;
         }
-        #messages div { margin-bottom: 3px; }
+        #messages div { margin-bottom: 3px; word-wrap: break-word; }
         #controls-area {
             display: flex;
             justify-content: space-between;
@@ -72,6 +74,10 @@
          .action-button:active {
              background: rgba(120, 120, 120, 0.8);
          }
+         .action-button:disabled {
+             opacity: 0.5;
+             cursor: not-allowed;
+         }
 
         #llm-controls {
             position: fixed;
@@ -86,10 +92,22 @@
             flex-direction: column;
             gap: 5px;
             z-index: 1000;
+            max-height: 90vh; /* Prevent controls overlapping messages too much */
+            overflow-y: auto; /* Allow scrolling if controls get too long */
+            scrollbar-width: thin;
+            scrollbar-color: #555 #333;
         }
          #llm-controls label, #llm-controls select, #llm-controls button, #llm-controls input {
              display: block;
              margin-bottom: 3px;
+         }
+         #llm-controls button {
+             padding: 3px 6px;
+             cursor: pointer;
+         }
+         #llm-controls button:disabled {
+             cursor: not-allowed;
+             opacity: 0.6;
          }
          #llm-chat {
              margin-top: 10px;
@@ -112,6 +130,14 @@
             font-size: 1.5em;
             z-index: 10001; /* Above jam link */
         }
+        #demo-controls, #debug-controls {
+            margin-top: 10px;
+            border-top: 1px solid #555;
+            padding-top: 5px;
+        }
+        #debug-controls button {
+             margin-right: 5px;
+         }
     </style>
 </head>
 <body>
@@ -155,6 +181,10 @@
                  <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-3B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf">Qwen2.5-Coder-3B</option>
                  <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf" selected>Qwen2.5-Coder-7B</option>
                  <option value="https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf">DeepSeek-R1-Distill-Qwen-7B</option>
+                 <!-- Add other sizes if needed -->
+                 <!-- <option value="https://huggingface.co/unsloth/Qwen2.5-Coder-14B-Instruct-128K-GGUF/resolve/main/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf">Qwen2.5-Coder-14B</option> -->
+                 <!-- <option value="https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf">DeepSeek-R1-Distill-Qwen-1.5B</option> -->
+                 <!-- <option value="https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf">DeepSeek-R1-Distill-Qwen-14B</option> -->
              </select>
          </div>
          <button id="load-llm-button">Load/Switch LLM</button>
@@ -166,6 +196,17 @@
          <div id="llm-chat" style="display: none;"> <!-- Hidden until LLM loaded -->
             <input type="text" id="chat-input" placeholder="Chat with Abyss...">
             <button id="send-chat-button">Send</button>
+         </div>
+
+         <div id="demo-controls">
+             <button id="toggle-demo-button">Enable Demo Mode</button>
+             <div id="demo-status" style="font-size: 11px; margin-top: 3px;">Demo: OFF</div>
+         </div>
+
+         <div id="debug-controls">
+             <button id="start-recording-button">Start Rec</button>
+             <button id="stop-recording-button" disabled>Stop Rec & Save</button>
+             <div id="recording-status" style="font-size: 11px; margin-top: 3px;">Rec: OFF</div>
          </div>
     </div>
 
@@ -215,6 +256,20 @@
         let moveJoystick = null;
         let lookJoystick = null;
 
+        // Demo State
+        let demoModeActive = false;
+        let demoState = 'WANDER'; // Initial demo state
+        let demoTargetEntity = null;
+        let demoTargetArtifact = null;
+        let demoStateTimer = 0;
+        const DEMO_STATE_TIMEOUT = 5; // Seconds before potentially changing state
+
+        // Recording State
+        let isRecording = false;
+        let recordedFrames = [];
+        let recordedEvents = [];
+        let frameCounter = 0;
+
         // --- DOM Elements ---
         const messagesDiv = document.getElementById('messages');
         const loadingOverlay = document.getElementById('loading-overlay');
@@ -233,18 +288,57 @@
         const attackMeleeButton = document.getElementById('attack-melee-button');
         const attackRangeButton = document.getElementById('attack-range-button');
         const interactButton = document.getElementById('interact-button');
+        const toggleDemoButton = document.getElementById('toggle-demo-button');
+        const demoStatusDiv = document.getElementById('demo-status');
+        const startRecordingButton = document.getElementById('start-recording-button');
+        const stopRecordingButton = document.getElementById('stop-recording-button');
+        const recordingStatusDiv = document.getElementById('recording-status');
 
 
         // --- Helper Functions ---
         function logMessage(text, type = 'info') {
             console.log(`[${type.toUpperCase()}] ${text}`);
+            if (type === 'demo' && !demoModeActive && !isRecording) return; // Don't log demo if not active/recording
+
             const div = document.createElement('div');
             div.textContent = text;
-            if (type === 'error') div.style.color = 'red';
-            if (type === 'llm') div.style.color = 'cyan';
-            if (type === 'warning') div.style.color = 'orange';
+            let color = '#eee'; // Default info color
+            switch(type) {
+                case 'error': color = 'red'; break;
+                case 'llm': color = 'cyan'; break;
+                case 'warning': color = 'orange'; break;
+                case 'demo': color = '#9f8'; break; // Light green
+                case 'user': color = '#8af'; break; // Light blue
+                case 'combat': color = '#f99'; break; // Light red
+                case 'game': color = '#fff'; break; // White for general game events
+                case 'system': color = '#aaa'; break; // Grey for system
+                case 'pickup': color = '#afa'; break; // Light green for pickup
+                case 'destroy': color = '#faa'; break; // Light red for destroy
+            }
+            div.style.color = color;
             messagesDiv.appendChild(div);
+            // Limit message count
+            while (messagesDiv.children.length > 100) {
+                messagesDiv.removeChild(messagesDiv.firstChild);
+            }
             messagesDiv.scrollTop = messagesDiv.scrollHeight; // Auto-scroll
+
+            // Log significant events to recording if active
+            if (isRecording && ['error', 'warning', 'combat', 'game', 'pickup', 'destroy', 'user', 'llm'].includes(type)) {
+                 logEvent('message', { type: type, text: text });
+            }
+        }
+
+        function logEvent(eventType, data) {
+            if (!isRecording) return;
+            // Avoid logging excessively large objects directly if possible
+            const cleanData = JSON.parse(JSON.stringify(data)); // Basic deep clone to avoid issues with mutable objects
+            recordedEvents.push({
+                frame: frameCounter,
+                timestamp: Date.now(),
+                eventType: eventType,
+                data: cleanData
+            });
         }
 
         function generateUUID() { // Simple UUID for IDs
@@ -259,13 +353,19 @@
         function playSound(type = 'click', volume = 0.1, duration = 0.05) {
             if (!audioCtx) {
                 try {
+                    // Request AudioContext on first user interaction (e.g., button click) if needed for autoplay policies
                     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 } catch (e) {
                     console.warn("Web Audio API not supported.");
                     return;
                 }
             }
-            if (!audioCtx) return;
+            if (!audioCtx || audioCtx.state === 'suspended') {
+                // Attempt to resume if suspended (often requires user gesture)
+                audioCtx.resume().catch(e => console.warn("Could not resume AudioContext:", e));
+                if (audioCtx.state !== 'running') return; // Still not running, exit
+            }
+
 
             const oscillator = audioCtx.createOscillator();
             const gainNode = audioCtx.createGain();
@@ -295,13 +395,13 @@
             constructor(id, position = { x: 0, y: 1, z: 0 }, isPlayer = false) {
                 this.id = id;
                 this.isPlayer = isPlayer;
-                this.soul = isPlayer ? 'player_soul' : `npc_soul_${id}`; // Simplified soul representation
-                this.mesh = new THREE.Group(); // Group to hold body + artifacts
-                this.bodyMesh = new THREE.Mesh( // Simple representation
+                this.soul = isPlayer ? 'player_soul' : `npc_soul_${id}`;
+                this.mesh = new THREE.Group();
+                this.bodyMesh = new THREE.Mesh(
                     new THREE.CapsuleGeometry(0.4, 1.0),
                     new THREE.MeshStandardMaterial({ color: isPlayer ? 0x00ff00 : 0xff0000 })
                 );
-                this.bodyMesh.position.y = 0.9; // Adjust capsule base
+                this.bodyMesh.position.y = 0.9;
                 this.mesh.add(this.bodyMesh);
                 this.mesh.position.set(position.x, position.y, position.z);
                 scene.add(this.mesh);
@@ -309,71 +409,78 @@
                 // Physics Body
                 const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
                     .setTranslation(position.x, position.y, position.z)
-                    .setLinearDamping(0.5) // Some damping
-                    .setAngularDamping(1.0); // Prevent spinning easily
+                    .setLinearDamping(0.5)
+                    .setAngularDamping(1.0);
                 this.rigidBody = physicsWorld.createRigidBody(rigidBodyDesc);
-                const colliderDesc = RAPIER.ColliderDesc.capsule(0.5, 0.4) // height/2, radius
+                const colliderDesc = RAPIER.ColliderDesc.capsule(0.5, 0.4)
                     .setRestitution(0.1)
                     .setFriction(0.5)
-                    .setDensity(1.0);
+                    .setDensity(1.0)
+                    .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS); // Enable collision events for entities
                 this.collider = physicsWorld.createCollider(colliderDesc, this.rigidBody);
-                this.collider.userData = { entityId: this.id, type: 'entity' }; // Link collider to entity
+                this.collider.userData = { entityId: this.id, type: 'entity' };
 
-                this.artifacts = new Map(); // Map<abilityType, artifactData>
-                this.hp = 100; // Base HP, maybe tied to core artifact later
+                this.artifacts = new Map();
+                this.hp = 100;
                 this.lastMoveTime = Date.now();
                 this.lastSeeTime = Date.now();
                 this.lastAttackTime = 0;
-                this.target = null; // For AI / Ranged attacks
+                this.target = null;
+                this.wanderTarget = null; // For AI wander state
 
                 entities.set(this.id, this);
                 logMessage(`Created ${isPlayer ? 'Player' : 'Creature'} ${this.id}`, 'game');
+                 logEvent('entity_created', { entityId: this.id, isPlayer: isPlayer, position: [position.x, position.y, position.z] });
             }
 
             addArtifact(artifact) {
-                if (!artifact || !artifact.abilityType) return false;
-                logMessage(`${this.id} trying to assemble ${artifact.id} (${artifact.abilityType})`, 'game');
+                if (!artifact || !artifact.abilityType || artifact.attachedTo) return false; // Check if already attached
+                logMessage(`${this.id} trying to assemble ${artifact.id} (${artifact.abilityType})`, 'pickup');
 
-                // Simple upgrade: If already have this type, destroy the weaker one (or just refresh time)
                 if (this.artifacts.has(artifact.abilityType)) {
                      const existingArtifact = this.artifacts.get(artifact.abilityType);
-                     logMessage(`Upgrading ${artifact.abilityType}. Refreshing timer.`, 'game');
-                     existingArtifact.creationTime = Date.now(); // Refresh timer
-                     // TODO: Implement level upgrades later
+                     logMessage(`Upgrading ${artifact.abilityType}. Refreshing timer. Destroying ${artifact.id}.`, 'pickup');
+                     existingArtifact.creationTime = Date.now();
+                     logEvent('artifact_upgraded', { entityId: this.id, artifactType: artifact.abilityType, oldArtifactId: existingArtifact.id, consumedArtifactId: artifact.id });
                      destroyArtifact(artifact.id); // Destroy the new one after upgrading the old one
                      playSound('pickup');
+                     if (this.isPlayer) updatePlayerUI();
                      return true;
                 }
 
                 this.artifacts.set(artifact.abilityType, artifact);
                 artifact.attachedTo = this.id;
-                // Visually attach artifact (simple offset)
                 const artifactMesh = artifacts.get(artifact.id)?.mesh;
                 if (artifactMesh) {
+                    // Make sure mesh is not parented elsewhere before adding
+                    if(artifactMesh.parent) artifactMesh.parent.remove(artifactMesh);
                     this.mesh.add(artifactMesh);
                     // Position artifacts simply around the body
                     const angle = (this.artifacts.size * Math.PI / 4); // Example positioning
                     artifactMesh.position.set(Math.sin(angle) * 0.6, 1.0, Math.cos(angle) * 0.6);
+                    artifactMesh.rotation.set(0,0,0); // Reset rotation relative to parent
                 }
-                logMessage(`${this.id} assembled ${artifact.id} (${artifact.abilityType})`, 'game');
+                logMessage(`${this.id} assembled ${artifact.id} (${artifact.abilityType})`, 'pickup');
                 playSound('pickup');
+                logEvent('artifact_pickup', { entityId: this.id, artifactId: artifact.id, abilityType: artifact.abilityType });
 
-                // Update player capabilities display or flags if needed
                 if (this.isPlayer) updatePlayerUI();
-
                 return true;
             }
 
-            removeArtifact(abilityType) {
+            removeArtifact(abilityType, reason = 'unknown') {
                 if (this.artifacts.has(abilityType)) {
                     const artifact = this.artifacts.get(abilityType);
-                    logMessage(`${this.id} lost artifact ${artifact.id} (${abilityType})`, 'game');
+                    logMessage(`${this.id} lost artifact ${artifact.id} (${abilityType}) due to ${reason}`, 'destroy');
+                    logEvent('artifact_removed', { entityId: this.id, artifactId: artifact.id, abilityType: abilityType, reason: reason });
                     this.artifacts.delete(abilityType);
-                    // Detach mesh (it will be removed by destroyArtifact)
-                    // If it's a vital artifact (like core body?), handle entity death
+                    // Detach mesh (it will be removed by destroyArtifact later)
+                    const artifactMesh = artifacts.get(artifact.id)?.mesh;
+                    if (artifactMesh) {
+                        this.mesh.remove(artifactMesh); // Remove from entity group
+                    }
                     if (this.isPlayer) updatePlayerUI();
-                    // Return the artifact ID so it can be fully destroyed
-                    return artifact.id;
+                    return artifact.id; // Return the artifact ID so it can be fully destroyed
                 }
                 return null;
             }
@@ -388,9 +495,15 @@
 
             update(deltaTime) {
                 // Sync mesh position with physics body
+                if (!this.rigidBody || !physicsWorld.getRigidBody(this.rigidBody.handle)) {
+                    console.warn(`Entity ${this.id} update called without valid rigidBody.`);
+                    // Consider removing the entity if its body is gone unexpectedly
+                    // entities.delete(this.id);
+                    // scene.remove(this.mesh);
+                    return;
+                }
                 const bodyPosition = this.rigidBody.translation();
                 this.mesh.position.copy(bodyPosition);
-                // Sync rotation (important for camera later) - handle quaternion conversion
                 const bodyRotation = this.rigidBody.rotation();
                 this.mesh.quaternion.set(bodyRotation.x, bodyRotation.y, bodyRotation.z, bodyRotation.w);
 
@@ -410,18 +523,19 @@
                         if (type === 'see' && now > this.lastSeeTime + 60000) disassemble = true; // No look/scan in 60s
 
                         if (disassemble && Math.random() < 0.3) { // Chance to disassemble
-                             logMessage(`Abyss reclaims expired ${type} artifact ${artifact.id} from ${this.id}`, 'warning');
                              expiredTypes.push(type);
-                             playSound('destroy');
-                        } else {
+                        } else if (disassemble) {
                             // Reset timer slightly if not disassembled (grace period)
                             artifact.creationTime = now - MAX_ARTIFACT_LIFETIME + 10000;
                         }
                     }
                 }
                 expiredTypes.forEach(type => {
-                    const artifactId = this.removeArtifact(type);
-                    if (artifactId) destroyArtifact(artifactId);
+                    const artifactId = this.removeArtifact(type, 'expired'); // Pass reason
+                    if (artifactId) {
+                        playSound('destroy');
+                        destroyArtifact(artifactId, 'expired'); // Pass reason
+                    }
                 });
 
                  // Basic HP Regen if not recently hit? (Placeholder)
@@ -430,51 +544,66 @@
 
             simpleAI(deltaTime) {
                 // Rudimentary AI: Move randomly or towards player if close
-                const distanceToPlayer = player ? this.mesh.position.distanceTo(player.mesh.position) : Infinity;
+                if (!player || !player.rigidBody) return; // No player or player invalid
+
+                const distanceToPlayer = this.mesh.position.distanceTo(player.mesh.position);
                 const aggroRadius = 15 + (ARENA_RADIUS - this.mesh.position.length()) * 0.2; // More aggro closer to center
 
                 if (this.hasAbility('move')) {
-                    let moveTarget = null;
+                    let moveTargetPos = null;
                     if (distanceToPlayer < aggroRadius) {
-                        moveTarget = player.mesh.position;
+                        moveTargetPos = player.mesh.position;
                         this.target = player; // Target player for attacks
                     } else {
                         this.target = null;
                         // Random wander (occasional change)
-                        if (Math.random() < 0.01) {
+                        if (!this.wanderTarget || this.mesh.position.distanceTo(this.wanderTarget) < 2 || Math.random() < 0.01) {
+                            const wanderAngle = Math.random() * Math.PI * 2;
+                            const wanderDist = 5 + Math.random() * 10;
                             this.wanderTarget = new THREE.Vector3(
-                                (Math.random() - 0.5) * ARENA_RADIUS * 1.5,
-                                1,
-                                (Math.random() - 0.5) * ARENA_RADIUS * 1.5
+                                this.mesh.position.x + Math.cos(wanderAngle) * wanderDist,
+                                this.mesh.position.y, // Keep same height level
+                                this.mesh.position.z + Math.sin(wanderAngle) * wanderDist
                             );
+                            // Clamp wander target to arena radius
+                            const distFromCenter = Math.sqrt(this.wanderTarget.x**2 + this.wanderTarget.z**2);
+                            if (distFromCenter > ARENA_RADIUS - 1) {
+                                this.wanderTarget.x = (this.wanderTarget.x / distFromCenter) * (ARENA_RADIUS - 1);
+                                this.wanderTarget.z = (this.wanderTarget.z / distFromCenter) * (ARENA_RADIUS - 1);
+                            }
                         }
                         if (this.wanderTarget) {
-                           moveTarget = this.wanderTarget;
-                           if(this.mesh.position.distanceTo(this.wanderTarget) < 2) this.wanderTarget = null; // Reached wander point
+                           moveTargetPos = this.wanderTarget;
                         }
                     }
 
-                    if (moveTarget) {
-                        const moveDir = new THREE.Vector3().subVectors(moveTarget, this.mesh.position).normalize();
+                    if (moveTargetPos) {
+                        const moveDir = new THREE.Vector3().subVectors(moveTargetPos, this.mesh.position);
                         moveDir.y = 0; // Don't move vertically
-                        const force = moveDir.multiplyScalar(20); // AI move force
-                        this.rigidBody.applyImpulse({ x: force.x * deltaTime, y: 0, z: force.z * deltaTime }, true);
-                        this.lastMoveTime = Date.now();
+                        const distToTarget = moveDir.length();
 
-                        // Rotate towards target
-                        const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
-                            new THREE.Vector3(0, 0, 1), // Default forward
-                             moveDir
-                         );
-                         const currentRotation = this.rigidBody.rotation();
-                         const currentQuaternion = new THREE.Quaternion(currentRotation.x, currentRotation.y, currentRotation.z, currentRotation.w);
-                         currentQuaternion.slerp(targetQuaternion, 0.1); // Smooth rotation
-                         this.rigidBody.setRotation(currentQuaternion, true);
+                        if (distToTarget > 0.5) { // Only move if not already at target
+                            moveDir.normalize();
+                            const forceMagnitude = this.target ? 30 : 15; // Move faster towards player
+                            const force = moveDir.multiplyScalar(forceMagnitude);
+                            this.rigidBody.applyImpulse({ x: force.x * deltaTime, y: 0, z: force.z * deltaTime }, true);
+                            this.lastMoveTime = Date.now();
+
+                            // Rotate towards target
+                            const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(
+                                new THREE.Vector3(0, 0, 1), // Model's default forward Z+
+                                new THREE.Vector3(moveDir.x, 0, moveDir.z).normalize() // Target direction in XZ plane
+                            );
+                             const currentRotation = this.rigidBody.rotation();
+                             const currentQuaternion = new THREE.Quaternion(currentRotation.x, currentRotation.y, currentRotation.z, currentRotation.w);
+                             currentQuaternion.slerp(targetQuaternion, 0.1); // Smooth rotation
+                             this.rigidBody.setRotation(currentQuaternion, true);
+                        }
                     }
                 }
 
                  // Basic Attack AI
-                 if (this.target && Date.now() > this.lastAttackTime + 2000) { // Cooldown
+                 if (this.target && entities.has(this.target.id) && Date.now() > this.lastAttackTime + 2000) { // Cooldown & target valid
                      const attackDistance = this.mesh.position.distanceTo(this.target.mesh.position);
                      if (this.hasAbility('attack_melee') && attackDistance < 2.0) {
                          this.performAttack('attack_melee', this.target);
@@ -486,12 +615,12 @@
                  // Simulate 'seeing'
                  if (this.hasAbility('see') && Math.random() < 0.1) {
                      this.lastSeeTime = Date.now();
-                     // Basic scan - just updates aggro check above
                  }
             }
 
             performAttack(type, targetEntity = null) {
-                if (!this.hasAbility(type) || Date.now() < this.lastAttackTime + (type === 'attack_melee' ? 500 : 1000)) {
+                const cooldown = type === 'attack_melee' ? 500 : 1000;
+                if (!this.hasAbility(type) || Date.now() < this.lastAttackTime + cooldown) {
                     return; // Check cooldown based on type
                 }
                 this.lastAttackTime = Date.now();
@@ -499,18 +628,21 @@
                 const damage = type === 'attack_melee' ? 20 : 10; // Melee stronger
                 const range = type === 'attack_melee' ? 2.0 : 30.0;
 
-                logMessage(`${this.id} uses ${type} (Damage: ${damage}, Range: ${range})`, 'combat');
+                logMessage(`${this.id} uses ${type} (Dmg: ${damage}, Rng: ${range})`, 'combat');
+                logEvent('attack_performed', { attackerId: this.id, attackType: type, damage: damage, range: range });
+
+                // Get current forward direction
+                const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
 
                 if (type === 'attack_melee') {
                     playSound('hit_melee');
-                    // Check entities in range (simple sphere check for now)
-                    const attackPos = this.mesh.position.clone();
-                    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
-                    attackPos.add(forward.multiplyScalar(1.0)); // Check slightly in front
+                    // Check entities in a cone/box in front? Simpler: sphere check offset forward.
+                    const attackPos = this.mesh.position.clone().add(forward.multiplyScalar(1.0)); // Check slightly in front
 
                     entities.forEach(entity => {
-                        if (entity.id !== this.id && entity.mesh.position.distanceTo(attackPos) < range) {
+                        if (entity.id !== this.id && entity.rigidBody && entity.mesh.position.distanceTo(attackPos) < range) {
                              logMessage(`${this.id} hits ${entity.id} with melee!`, 'combat');
+                             // Damage dealt event logged within takeDamage
                              entity.takeDamage(damage, this.id);
                         }
                     });
@@ -522,8 +654,7 @@
                     const projectileMesh = new THREE.Mesh(projectileGeo, projectileMat);
 
                     const startPos = this.mesh.position.clone().add(new THREE.Vector3(0, 1.0, 0)); // Start near 'head'
-                    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.mesh.quaternion);
-                    projectileMesh.position.copy(startPos).add(forward.multiplyScalar(0.5)); // Start slightly ahead
+                    projectileMesh.position.copy(startPos).add(forward.multiplyScalar(0.6)); // Start slightly ahead
 
                     const projectileBodyDesc = RAPIER.RigidBodyDesc.dynamic()
                         .setTranslation(projectileMesh.position.x, projectileMesh.position.y, projectileMesh.position.z)
@@ -535,7 +666,10 @@
                         .setSensor(true) // Sensor detects collision but doesn't cause physical reaction
                         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS);
                     const projectileCollider = physicsWorld.createCollider(projectileColliderDesc, projectileBody);
-                    projectileCollider.userData = { type: 'projectile', damage: damage, ownerId: this.id, mesh: projectileMesh };
+                    const projectileId = `proj_${generateUUID()}`;
+                    projectileCollider.userData = { type: 'projectile', id: projectileId, damage: damage, ownerId: this.id, mesh: projectileMesh };
+
+                    logEvent('projectile_fired', { ownerId: this.id, projectileId: projectileId, damage: damage, startPos: projectileMesh.position.toArray(), direction: forward.toArray() });
 
                     // Apply initial impulse
                     const speed = 30.0;
@@ -545,8 +679,10 @@
 
                     // Self-destruct after time
                     setTimeout(() => {
-                        scene.remove(projectileMesh);
-                        if (physicsWorld.getRigidBody(projectileBody.handle)) { // Check if still exists
+                        if (projectileMesh.parent) scene.remove(projectileMesh);
+                        // Check body exists before removing
+                        if (physicsWorld.getRigidBody(projectileBody.handle)) {
+                            logEvent('projectile_destroyed', { projectileId: projectileId, reason: 'timeout' });
                             physicsWorld.removeRigidBody(projectileBody);
                         }
                     }, 3000); // Projectile lasts 3 seconds
@@ -554,127 +690,152 @@
             }
 
             takeDamage(amount, attackerId) {
-                 // Damage first tries to break a random artifact, then HP
                  const artifactKeys = Array.from(this.artifacts.keys());
+                 let damageApplied = false;
                  if (artifactKeys.length > 0) {
                      const randomType = artifactKeys[Math.floor(Math.random() * artifactKeys.length)];
-                     const artifactId = this.removeArtifact(randomType);
+                     const artifact = this.artifacts.get(randomType);
+                     const artifactId = artifact?.id;
+
                      if (artifactId) {
-                         logMessage(`${this.id}'s ${randomType} artifact was destroyed by ${attackerId}!`, 'combat');
-                         destroyArtifact(artifactId);
-                         playSound('destroy');
+                        // Attempt to remove the artifact, passing the reason
+                        const removedId = this.removeArtifact(randomType, `damage_from_${attackerId}`);
+                        if (removedId) {
+                            logMessage(`${this.id}'s ${randomType} artifact ${removedId} was destroyed by ${attackerId}!`, 'combat');
+                            logEvent('artifact_destroyed_by_damage', { victimId: this.id, attackerId: attackerId, artifactId: removedId, abilityType: randomType });
+                            destroyArtifact(removedId, `damage_from_${attackerId}`); // Pass reason
+                            playSound('destroy');
+                            damageApplied = true;
+                        }
                      }
-                 } else {
+                 }
+
+                 // If no artifact was destroyed (either none existed or removal failed), apply HP damage
+                 if (!damageApplied) {
                      this.hp -= amount;
+                     this.hp = Math.max(0, this.hp); // Ensure HP doesn't go below 0
                      logMessage(`${this.id} took ${amount} direct damage from ${attackerId}. HP: ${this.hp}`, 'combat');
+                     logEvent('damage_taken', { victimId: this.id, attackerId: attackerId, amount: amount, hpRemaining: this.hp, type: artifactKeys.length > 0 ? 'direct_artifact_failed' : 'direct_no_artifacts' });
                      if (this.hp <= 0) {
-                         this.die();
+                         this.die(attackerId);
                      }
                  }
             }
 
-            die() {
-                logMessage(`${this.id} has been defeated. Soul absorbed by the Abyss.`, 'game');
+            die(killerId = 'unknown') {
+                if (!entities.has(this.id)) return; // Already dead / removed
+
+                logMessage(`${this.id} has been defeated by ${killerId}. Soul absorbed by the Abyss.`, 'game');
+                logEvent('entity_death', { entityId: this.id, killerId: killerId, position: this.mesh.position.toArray() });
                 playSound('destroy');
-                // Remove all remaining artifacts
+
+                // Drop all remaining artifacts
                 const artifactTypes = Array.from(this.artifacts.keys());
                 artifactTypes.forEach(type => {
-                    const artifactId = this.removeArtifact(type);
-                    if (artifactId) destroyArtifact(artifactId);
+                    const artifact = this.artifacts.get(type);
+                    const artifactId = artifact?.id;
+                    if (artifactId) {
+                        const removedId = this.removeArtifact(type, 'death_drop'); // Logs removal event
+                        if (removedId) {
+                            logEvent('artifact_dropped_on_death', { ownerId: this.id, artifactId: removedId, abilityType: type });
+                            // Don't destroy the artifact, let it fall to the ground
+                            const artifactInstance = artifacts.get(removedId);
+                            if (artifactInstance) {
+                                artifactInstance.attachedTo = null;
+                                // Position it where the entity died
+                                artifactInstance.mesh.position.copy(this.mesh.position);
+                                artifactInstance.mesh.position.y = 0.5; // Place on ground
+                                // Add back to scene root if it was removed from entity mesh
+                                if (!artifactInstance.mesh.parent) {
+                                    scene.add(artifactInstance.mesh);
+                                }
+                            }
+                        }
+                    }
                 });
 
                 // Remove entity from game
                 scene.remove(this.mesh);
-                 if (physicsWorld.getRigidBody(this.rigidBody.handle)) {
+                 if (this.rigidBody && physicsWorld.getRigidBody(this.rigidBody.handle)) {
                     physicsWorld.removeRigidBody(this.rigidBody);
                 }
                 entities.delete(this.id);
 
-                // TODO: Handle player death (respawn? game over?)
                 if (this.isPlayer) {
                     logMessage("YOU DIED. The Abyss consumes your soul... for now.", 'error');
-                    // Simple reload for now in jam context
-                    setTimeout(() => window.location.reload(), 3000);
+                    logEvent('player_death', { killerId: killerId });
+                    if (isRecording) stopRecording(); // Stop recording on player death
+                    setTimeout(() => window.location.reload(), 3000); // Simple reload
                 } else {
-                    // Non-LLM: Maybe drop an artifact?
-                     if (Math.random() < 0.3) { // Chance to drop something
-                         createArtifact(null, this.mesh.position); // Create a random one nearby
-                     }
-                    // LLM Mode: Soul is now available for the Abyss LLM to potentially reuse
+                    // No extra drop chance needed, all artifacts are dropped now
                     if (llmReady) {
                         logMessage(`Soul ${this.soul} is now free in the Abyss.`, 'llm');
-                        // Future: LLM could decide to inhabit a new artifact with this soul.
+                        logEvent('soul_released', { entityId: this.id, soulId: this.soul });
                     }
                 }
             }
 
              interact() {
-                 if (!this.isPlayer) return; // Only player interacts actively
+                 if (!this.isPlayer) return;
 
                  const interactionRadius = 2.0;
                  let closestArtifact = null;
-                 let minDist = interactionRadius;
-
+                 let minDistSq = interactionRadius * interactionRadius;
                  const playerPos = this.mesh.position;
 
                  artifacts.forEach(artifact => {
-                     if (!artifact.attachedTo && artifact.mesh) { // Only interact with unattached artifacts
-                         const dist = playerPos.distanceTo(artifact.mesh.position);
-                         if (dist < minDist) {
-                             minDist = dist;
+                     if (!artifact.attachedTo && artifact.mesh) {
+                         const distSq = playerPos.distanceToSquared(artifact.mesh.position);
+                         if (distSq < minDistSq) {
+                             minDistSq = distSq;
                              closestArtifact = artifact;
                          }
                      }
                  });
 
                  if (closestArtifact) {
-                     logMessage(`Player attempts to pick up ${closestArtifact.id} (${closestArtifact.abilityType})`, 'game');
-                     if (this.addArtifact(closestArtifact)) {
-                         // Successfully added (or upgraded)
-                         // Artifact mesh is now attached in addArtifact
+                     logMessage(`Player attempts to pick up ${closestArtifact.id} (${closestArtifact.abilityType})`, 'pickup');
+                     logEvent('interaction_attempt', { entityId: this.id, targetArtifactId: closestArtifact.id, targetType: 'artifact' });
+                     if (this.addArtifact(closestArtifact)) { // addArtifact logs its own success event
+                         // Success handled in addArtifact
                      } else {
                          logMessage(`Could not assemble ${closestArtifact.id}.`, 'warning');
+                         logEvent('interaction_failed', { entityId: this.id, targetArtifactId: closestArtifact.id, reason: 'assembly_failed' });
                      }
                  } else {
                      logMessage("Nothing nearby to interact with.", 'info');
+                     logEvent('interaction_attempt', { entityId: this.id, targetArtifactId: null, targetType: null, reason: 'nothing_in_range' });
                  }
              }
-        }
+        } // End Entity Class
 
         class Artifact {
             constructor(id, abilityType, position = { x: 0, y: 0.5, z: 0 }, level = 1) {
                 this.id = id;
-                this.abilityType = abilityType || getRandomAbilityType(); // e.g., 'move', 'see', 'attack_melee', 'attack_range', 'tool_creation_tool'
+                this.abilityType = abilityType || getRandomAbilityType();
                 this.level = level;
                 this.creationTime = Date.now();
                 this.attachedTo = null; // Entity ID if attached
 
                 // Visual representation
                 let geometry, material;
+                const colorMap = {
+                    'move': 0x0000ff, 'see': 0xffff00, 'attack_melee': 0xff0000,
+                    'attack_range': 0xffa500, 'tool_creation_tool': 0x00ffff, 'default': 0xaaaaaa
+                };
+                const matParams = { color: colorMap[this.abilityType] || colorMap['default'] };
+                if (this.abilityType === 'tool_creation_tool') {
+                    matParams.emissive = 0x00aaaa;
+                }
+                material = new THREE.MeshStandardMaterial(matParams);
+
                 switch (this.abilityType) {
-                    case 'move':
-                        geometry = new THREE.ConeGeometry(0.2, 0.4, 4);
-                        material = new THREE.MeshStandardMaterial({ color: 0x0000ff }); // Blue
-                        break;
-                    case 'see':
-                        geometry = new THREE.SphereGeometry(0.2, 8, 8);
-                        material = new THREE.MeshStandardMaterial({ color: 0xffff00 }); // Yellow
-                        break;
-                    case 'attack_melee':
-                        geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-                        material = new THREE.MeshStandardMaterial({ color: 0xff0000 }); // Red
-                        break;
-                    case 'attack_range':
-                        geometry = new THREE.TorusGeometry(0.15, 0.05, 8, 16);
-                        material = new THREE.MeshStandardMaterial({ color: 0xffa500 }); // Orange
-                        break;
-                     case 'tool_creation_tool':
-                         geometry = new THREE.IcosahedronGeometry(0.25);
-                         material = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00aaaa }); // Cyan, glowing
-                         break;
-                    default:
-                        geometry = new THREE.DodecahedronGeometry(0.2);
-                        material = new THREE.MeshStandardMaterial({ color: 0xaaaaaa }); // Grey
+                    case 'move': geometry = new THREE.ConeGeometry(0.2, 0.4, 4); break;
+                    case 'see': geometry = new THREE.SphereGeometry(0.2, 8, 8); break;
+                    case 'attack_melee': geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3); break;
+                    case 'attack_range': geometry = new THREE.TorusGeometry(0.15, 0.05, 8, 16); break;
+                    case 'tool_creation_tool': geometry = new THREE.IcosahedronGeometry(0.25); break;
+                    default: geometry = new THREE.DodecahedronGeometry(0.2);
                 }
                 this.mesh = new THREE.Mesh(geometry, material);
                 this.mesh.position.set(position.x, position.y, position.z);
@@ -683,42 +844,42 @@
 
                 artifacts.set(this.id, this);
                 logMessage(`Created Artifact ${this.id} (${this.abilityType}) at ${position.x.toFixed(1)}, ${position.z.toFixed(1)}`, 'game');
+                logEvent('artifact_created', { artifactId: this.id, abilityType: this.abilityType, position: [position.x, position.y, position.z], level: level });
             }
-        }
+        } // End Artifact Class
 
         function createArtifact(abilityType = null, position = null) {
             const id = `artifact_${artifactIdCounter++}`;
             if (!position) {
-                // Random position within arena, avoiding center slightly initially
                 const radius = Math.random() * (ARENA_RADIUS - 5) + 5;
                 const angle = Math.random() * Math.PI * 2;
                 position = { x: Math.cos(angle) * radius, y: 0.5, z: Math.sin(angle) * radius };
             }
+            // Ensure position is valid
+            position.y = position.y || 0.5;
+
             return new Artifact(id, abilityType, position);
         }
 
-        function destroyArtifact(artifactId) {
+        function destroyArtifact(artifactId, reason = 'unknown') {
             const artifact = artifacts.get(artifactId);
             if (artifact) {
+                logEvent('artifact_destroyed', { artifactId: artifact.id, abilityType: artifact.abilityType, reason: reason });
                 if (artifact.mesh) {
-                    // If attached, the parent group (entity mesh) should already have removed it
-                    if (!artifact.attachedTo) {
-                         scene.remove(artifact.mesh);
-                    } else {
-                        // Ensure it's removed from the parent mesh if somehow still attached
-                        const owner = entities.get(artifact.attachedTo);
-                        owner?.mesh?.remove(artifact.mesh);
-                    }
+                    if (artifact.mesh.parent) artifact.mesh.parent.remove(artifact.mesh);
+                    // Dispose geometry and material to free GPU memory? Maybe overkill for jam.
+                    // artifact.mesh.geometry.dispose();
+                    // artifact.mesh.material.dispose();
                 }
                 artifacts.delete(artifactId);
-                logMessage(`Destroyed Artifact ${artifactId}`, 'game');
+                logMessage(`Destroyed Artifact ${artifactId} (Reason: ${reason})`, 'destroy');
             }
         }
 
          function getRandomAbilityType(allowToolCreation = false) {
              const types = ['move', 'see', 'attack_melee', 'attack_range'];
-             // Very low chance for tool creation artifact normally
-             if (allowToolCreation && Math.random() < 0.01) {
+             // Slightly higher chance for tool creation for testing? No, keep it rare.
+             if (allowToolCreation && Math.random() < 0.01) { // 1% chance if allowed
                 return 'tool_creation_tool';
              }
              return types[Math.floor(Math.random() * types.length)];
@@ -730,13 +891,13 @@
             await RAPIER.init();
             const gravity = { x: 0.0, y: -9.81, z: 0.0 };
             physicsWorld = new RAPIER.World(gravity);
-            eventQueue = new RAPIER.EventQueue(true); // Enable contact event reporting
+            eventQueue = new RAPIER.EventQueue(true);
             logMessage("Physics Engine Ready.", 'system');
         }
 
         function setupArena() {
             // Ground
-            const groundSize = ARENA_RADIUS * 2.5; // Make ground larger than walls
+            const groundSize = ARENA_RADIUS * 2.5;
             const groundHeight = 0.1;
             const groundGeo = new THREE.CylinderGeometry(ARENA_RADIUS, ARENA_RADIUS, groundHeight, 64);
             const groundMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.2, roughness: 0.8 });
@@ -746,35 +907,40 @@
 
             const groundBodyDesc = RAPIER.RigidBodyDesc.fixed();
             const groundColliderDesc = RAPIER.ColliderDesc.cylinder(groundHeight / 2, ARENA_RADIUS);
-            physicsWorld.createCollider(groundColliderDesc, physicsWorld.createRigidBody(groundBodyDesc).handle);
+            const groundBody = physicsWorld.createRigidBody(groundBodyDesc);
+            physicsWorld.createCollider(groundColliderDesc, groundBody.handle);
 
-            // Arena Walls (Invisible)
+            // Visual Walls
             const wallHeight = ARENA_HEIGHT;
+            const wallGeo = new THREE.CylinderGeometry(ARENA_RADIUS, ARENA_RADIUS, wallHeight, 64, 1, true); // Open ended
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x886666, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+            const wallMesh = new THREE.Mesh(wallGeo, wallMat);
+            wallMesh.position.y = wallHeight / 2;
+            scene.add(wallMesh);
+
+            // Physics Walls (Slightly outside visual radius)
             const wallThickness = 1.0;
-            const wallBodyDesc = RAPIER.RigidBodyDesc.fixed();
-            const wallColliderDesc = RAPIER.ColliderDesc.cylinder(wallHeight / 2, ARENA_RADIUS + wallThickness / 2) // Outer cylinder
-                 .setTranslation(0, wallHeight / 2, 0); // Position it correctly
-            // This creates a solid cylinder, we want a hollow one. Rapier doesn't have direct hollow cylinder.
-            // Workaround: Use multiple segments or just rely on the outer boundary.
-            // For simplicity, we'll just use the solid cylinder boundary collider. It prevents escape.
-            // A better way would be Heightfield or multiple Cuboid colliders forming a ring.
-            // Let's stick to the simple cylinder boundary for the jam.
-             const wallBody = physicsWorld.createRigidBody(wallBodyDesc);
-             const wallCollider = RAPIER.ColliderDesc.cylinder(wallHeight / 2, ARENA_RADIUS)
-                .setTranslation(0, wallHeight / 2, 0);
-             // We actually want the *outside* to be solid, which is tricky.
-             // Let's just make a thick visual wall instead for clarity and use the ground collider.
-             // And add logic to push entities back if they exceed radius.
+            const wallBodyDesc = RAPIER.RigidBodyDesc.fixed(); // Use a separate body for walls/ceiling
+            const wallBody = physicsWorld.createRigidBody(wallBodyDesc);
 
-             // Alternative: Make a visual wall
-             const wallGeo = new THREE.CylinderGeometry(ARENA_RADIUS, ARENA_RADIUS, wallHeight, 64, 1, true); // Open ended
-             const wallMat = new THREE.MeshStandardMaterial({ color: 0x886666, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
-             const wallMesh = new THREE.Mesh(wallGeo, wallMat);
-             wallMesh.position.y = wallHeight / 2;
-             scene.add(wallMesh);
+            const numWallSegments = 32;
+            const segmentAngle = (Math.PI * 2) / numWallSegments;
+            const wallSegmentLength = ARENA_RADIUS * 2 * Math.tan(segmentAngle / 2); // Approximation
+            const wallRadiusOffset = ARENA_RADIUS + wallThickness / 2;
 
-             // Add a physics ceiling (invisible)
-             const ceilingColliderDesc = RAPIER.ColliderDesc.cuboid(ARENA_RADIUS * 1.5, 0.1, ARENA_RADIUS * 1.5)
+            for (let i = 0; i < numWallSegments; i++) {
+                const angle = i * segmentAngle;
+                const x = Math.cos(angle + segmentAngle / 2) * wallRadiusOffset;
+                const z = Math.sin(angle + segmentAngle / 2) * wallRadiusOffset;
+                const wallSegmentColliderDesc = RAPIER.ColliderDesc.cuboid(wallThickness / 2, wallHeight / 2, wallSegmentLength / 2)
+                    .setTranslation(x, wallHeight / 2, z)
+                    .setRotation({ w: Math.cos(-angle/2), x: 0, y: Math.sin(-angle/2), z: 0 }); // Rotate segment
+                physicsWorld.createCollider(wallSegmentColliderDesc, wallBody.handle);
+            }
+
+
+             // Physics Ceiling (Invisible)
+             const ceilingColliderDesc = RAPIER.ColliderDesc.cuboid(ARENA_RADIUS * 1.1, 0.1, ARENA_RADIUS * 1.1) // Slightly larger than radius
                 .setTranslation(0, ARENA_HEIGHT + 0.1, 0);
             physicsWorld.createCollider(ceilingColliderDesc, wallBody.handle); // Attach to the fixed wall body
 
@@ -787,29 +953,60 @@
 
                  const collider1 = physicsWorld.getCollider(handle1);
                  const collider2 = physicsWorld.getCollider(handle2);
+                 // Check if colliders still exist (might be removed mid-frame)
+                 if (!collider1 || !collider2) return;
 
                  const userData1 = collider1.userData;
                  const userData2 = collider2.userData;
 
+                 // Simplify logging data
+                 const logData1 = { handle: handle1, type: userData1?.type, id: userData1?.entityId || userData1?.artifactId || userData1?.id };
+                 const logData2 = { handle: handle2, type: userData2?.type, id: userData2?.entityId || userData2?.artifactId || userData2?.id };
+                 logEvent('collision_started', { collider1: logData1, collider2: logData2 });
+
+
                  // Projectile collision
-                 if (userData1?.type === 'projectile' || userData2?.type === 'projectile') {
-                     const projectileData = userData1.type === 'projectile' ? userData1 : userData2;
-                     const otherData = userData1.type === 'projectile' ? userData2 : userData1;
-                     const projectileCollider = userData1.type === 'projectile' ? collider1 : collider2;
-                     const projectileBody = projectileCollider.parent();
+                 let projectileData = null, otherData = null;
+                 let projectileCollider = null, projectileBody = null;
 
+                 if (userData1?.type === 'projectile') {
+                     projectileData = userData1; otherData = userData2; projectileCollider = collider1;
+                 } else if (userData2?.type === 'projectile') {
+                     projectileData = userData2; otherData = userData1; projectileCollider = collider2;
+                 }
 
-                     if (otherData?.type === 'entity' && otherData.entityId !== projectileData.ownerId) {
-                         const targetEntity = entities.get(otherData.entityId);
-                         if (targetEntity) {
-                             logMessage(`Projectile from ${projectileData.ownerId} hit ${targetEntity.id}!`, 'combat');
-                             targetEntity.takeDamage(projectileData.damage, projectileData.ownerId);
-                         }
+                 if (projectileData && projectileCollider) {
+                     projectileBody = projectileCollider.parent();
+                     // Check if projectile body still exists
+                     if (!projectileBody || !physicsWorld.getRigidBody(projectileBody.handle)) {
+                         // Projectile might have been destroyed already (e.g., timeout)
+                         return;
                      }
-                     // Remove projectile on any impact (except maybe other projectiles)
-                     if (otherData?.type !== 'projectile') {
-                         if (projectileData.mesh) scene.remove(projectileData.mesh);
-                         if (projectileBody && physicsWorld.getRigidBody(projectileBody.handle)) {
+
+                     let targetEntity = null;
+                     if (otherData?.type === 'entity' && otherData.entityId !== projectileData.ownerId) {
+                         targetEntity = entities.get(otherData.entityId);
+                     }
+
+                     logEvent('projectile_collision', {
+                         projectileId: projectileData.id,
+                         ownerId: projectileData.ownerId,
+                         targetType: otherData?.type,
+                         targetId: otherData?.id || otherData?.entityId || otherData?.artifactId,
+                         hitEntity: !!targetEntity
+                     });
+
+                     if (targetEntity) {
+                         logMessage(`Projectile ${projectileData.id} from ${projectileData.ownerId} hit ${targetEntity.id}!`, 'combat');
+                         targetEntity.takeDamage(projectileData.damage, projectileData.ownerId); // takeDamage logs the damage event
+                     }
+
+                     // Remove projectile on impact with anything other than another sensor/projectile?
+                     if (otherData?.type !== 'projectile' && !collider1.isSensor() && !collider2.isSensor()) {
+                         if (projectileData.mesh && projectileData.mesh.parent) scene.remove(projectileData.mesh);
+                         // Check body exists before removing
+                         if (physicsWorld.getRigidBody(projectileBody.handle)) {
+                             logEvent('projectile_destroyed', { projectileId: projectileData.id, reason: 'impact' });
                              physicsWorld.removeRigidBody(projectileBody);
                          }
                      }
@@ -822,6 +1019,9 @@
             logMessage("Initializing Controls...", 'system');
             // Keyboard
             window.addEventListener('keydown', (e) => {
+                // Allow chat input without triggering game actions
+                if (document.activeElement === chatInput) return;
+
                 switch (e.code) {
                     case 'KeyW': case 'ArrowUp': inputState.moveForward = 1; break;
                     case 'KeyS': case 'ArrowDown': inputState.moveBackward = 1; break;
@@ -835,6 +1035,8 @@
                 }
             });
             window.addEventListener('keyup', (e) => {
+                 if (document.activeElement === chatInput) return;
+
                 switch (e.code) {
                     case 'KeyW': case 'ArrowUp': inputState.moveForward = 0; break;
                     case 'KeyS': case 'ArrowDown': inputState.moveBackward = 0; break;
@@ -842,24 +1044,9 @@
                     case 'KeyD': case 'ArrowRight': inputState.moveRight = 0; break;
                     case 'KeyQ': inputState.rotateLeft = 0; break;
                     case 'KeyE': inputState.rotateRight = 0; break;
-                    case 'KeyF': case 'Space': inputState.actionInteract = false; break;
-                    case 'Digit1': case 'KeyJ': inputState.actionMelee = false; break;
-                    case 'Digit2': case 'KeyK': inputState.actionRange = false; break;
+                    // Action keys are handled differently (momentary press)
                 }
             });
-
-            // Mouse Look (Basic - only horizontal for now)
-            // window.addEventListener('mousemove', (e) => {
-            //     if (document.pointerLockElement === renderer.domElement) {
-            //         inputState.rotateLeft -= e.movementX * 0.002;
-            //         inputState.rotateRight += e.movementX * 0.002;
-            //         // inputState.rotateUp -= e.movementY * 0.002; // Add vertical look later if needed
-            //         // inputState.rotateDown += e.movementY * 0.002;
-            //     }
-            // });
-            // renderer.domElement.addEventListener('click', () => {
-            //     renderer.domElement.requestPointerLock();
-            // });
 
              // Touch Controls (NippleJS)
              try {
@@ -867,42 +1054,31 @@
                  const joystickZoneRight = document.getElementById('joystick-right');
 
                  if (joystickZoneLeft && joystickZoneRight) {
-                     const joystickOptions = {
-                         zone: joystickZoneLeft,
+                     const commonOptions = {
                          mode: 'static',
                          position: { left: '50%', top: '50%' },
-                         color: 'white',
+                         color: 'rgba(255,255,255,0.5)',
                          size: 80
                      };
-                     moveJoystick = nipplejs.create(joystickOptions);
+                     moveJoystick = nipplejs.create({...commonOptions, zone: joystickZoneLeft });
+                     lookJoystick = nipplejs.create({...commonOptions, zone: joystickZoneRight });
 
                      moveJoystick.on('move', (evt, data) => {
                          if (data.vector) {
                              inputState.touchMove.x = data.vector.x;
                              inputState.touchMove.y = data.vector.y;
                          }
-                     });
-                     moveJoystick.on('end', () => {
+                     }).on('end', () => {
                          inputState.touchMove.x = 0;
                          inputState.touchMove.y = 0;
                      });
-
-                     const lookJoystickOptions = {
-                         zone: joystickZoneRight,
-                         mode: 'static',
-                         position: { left: '50%', top: '50%' },
-                         color: 'white',
-                         size: 80
-                     };
-                     lookJoystick = nipplejs.create(lookJoystickOptions);
 
                      lookJoystick.on('move', (evt, data) => {
                          if (data.vector) {
                              inputState.touchLook.x = data.vector.x;
                              inputState.touchLook.y = data.vector.y; // Use for vertical look later?
                          }
-                     });
-                     lookJoystick.on('end', () => {
+                     }).on('end', () => {
                          inputState.touchLook.x = 0;
                          inputState.touchLook.y = 0;
                      });
@@ -912,13 +1088,31 @@
                      logMessage("Joystick zones not found.", 'warning');
                  }
 
-                 // Touch Buttons
-                 attackMeleeButton.addEventListener('touchstart', (e) => { e.preventDefault(); inputState.actionMelee = true; playSound(); });
-                 attackMeleeButton.addEventListener('touchend', (e) => { e.preventDefault(); inputState.actionMelee = false; });
-                 attackRangeButton.addEventListener('touchstart', (e) => { e.preventDefault(); inputState.actionRange = true; playSound(); });
-                 attackRangeButton.addEventListener('touchend', (e) => { e.preventDefault(); inputState.actionRange = false; });
-                 interactButton.addEventListener('touchstart', (e) => { e.preventDefault(); inputState.actionInteract = true; playSound(); });
-                 interactButton.addEventListener('touchend', (e) => { e.preventDefault(); inputState.actionInteract = false; });
+                 // Touch Buttons - Use pointer events for better multi-touch handling
+                 const setupButton = (button, action) => {
+                     button.addEventListener('pointerdown', (e) => {
+                         e.preventDefault(); // Prevent default touch actions
+                         if (!button.disabled) {
+                             inputState[action] = true;
+                             playSound(); // Basic click sound
+                             button.style.background = 'rgba(120, 120, 120, 0.8)'; // Active feedback
+                         }
+                     });
+                     // Release state on pointerup or pointerleave/cancel
+                     const releaseAction = (e) => {
+                         e.preventDefault();
+                         inputState[action] = false;
+                         button.style.background = 'rgba(80, 80, 80, 0.7)'; // Reset background
+                     };
+                     button.addEventListener('pointerup', releaseAction);
+                     button.addEventListener('pointerleave', releaseAction);
+                     button.addEventListener('pointercancel', releaseAction);
+                 };
+
+                 setupButton(attackMeleeButton, 'actionMelee');
+                 setupButton(attackRangeButton, 'actionRange');
+                 setupButton(interactButton, 'actionInteract');
+
 
              } catch (err) {
                  logMessage(`Failed to initialize NippleJS: ${err}`, 'error');
@@ -935,16 +1129,34 @@
                 inputState.gamepadConnected = false;
             });
 
+            // Resume AudioContext on first interaction
+            const resumeAudio = () => {
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+                window.removeEventListener('pointerdown', resumeAudio);
+                 window.removeEventListener('keydown', resumeAudio);
+            };
+            window.addEventListener('pointerdown', resumeAudio, { once: true });
+             window.addEventListener('keydown', resumeAudio, { once: true });
+
+
             logMessage("Controls Initialized.", 'system');
         }
 
         function processInput(deltaTime) {
-            if (!player || !player.rigidBody) return;
+            // This function now ONLY reads input devices and sets the inputState object.
+            // It does NOT apply physics directly.
+            if (!player || !player.rigidBody || demoModeActive) return; // Don't process user input in demo mode
 
-            let moveImpulse = { x: 0, y: 0, z: 0 };
-            let rotationImpulse = { x: 0, y: 0, z: 0 }; // Using torque for rotation
-            const moveSpeed = 40.0;
-            const rotateSpeed = 2.0;
+            // --- Reset momentary actions ---
+            // These are set by keydown/pointerdown and should only trigger once.
+            // The application logic in animate() will check these flags.
+            // We reset them here unless the key/button is still held down (handled by continuous flags like moveForward).
+            // For simplicity with multiple input types, let's make actions momentary unless held.
+            // Flags like actionMelee, actionRange, actionInteract are set true on press,
+            // and need to be reset *after* being checked in the physics application step.
+            // Let's handle the reset in the physics application step instead.
 
             // --- Gamepad Input ---
             if (inputState.gamepadConnected) {
@@ -956,93 +1168,426 @@
                     const leftStickX = gp.axes[0];
                     const leftStickY = gp.axes[1];
                     const rightStickX = gp.axes[2];
-                    // const rightStickY = gp.axes[3]; // Vertical look
 
-                    if (Math.abs(leftStickY) > 0.1) moveImpulse.z -= leftStickY;
-                    if (Math.abs(leftStickX) > 0.1) moveImpulse.x += leftStickX;
-                    if (Math.abs(rightStickX) > 0.1) rotationImpulse.y -= rightStickX * rotateSpeed;
-                    // Add vertical look later if needed using rightStickY
+                    // Deadzone
+                    const deadzone = 0.15;
+                    inputState.moveForward = (leftStickY < -deadzone) ? -leftStickY : 0;
+                    inputState.moveBackward = (leftStickY > deadzone) ? leftStickY : 0;
+                    inputState.moveLeft = (leftStickX < -deadzone) ? -leftStickX : 0;
+                    inputState.moveRight = (leftStickX > deadzone) ? leftStickX : 0;
+                    inputState.rotateLeft = (rightStickX < -deadzone) ? -rightStickX : 0;
+                    inputState.rotateRight = (rightStickX > deadzone) ? rightStickX : 0;
 
-                    // Buttons (Example mapping - check your gamepad layout)
-                    if (gp.buttons[0]?.pressed) inputState.actionInteract = true; // A / Cross
-                    if (gp.buttons[2]?.pressed) inputState.actionMelee = true; // X / Square
-                    if (gp.buttons[3]?.pressed) inputState.actionRange = true; // Y / Triangle
-                    // Reset button states if not pressed (handle release)
-                    if (!gp.buttons[0]?.pressed) inputState.actionInteract = false;
-                    if (!gp.buttons[2]?.pressed) inputState.actionMelee = false;
-                    if (!gp.buttons[3]?.pressed) inputState.actionRange = false;
+
+                    // Buttons (Standard Layout Mapping)
+                    // We check 'pressed' state. The application logic will handle momentary actions.
+                    if (gp.buttons[0]?.pressed) inputState.actionInteract = true; else inputState.actionInteract = false; // A / Cross
+                    if (gp.buttons[2]?.pressed) inputState.actionMelee = true; else inputState.actionMelee = false; // X / Square
+                    if (gp.buttons[3]?.pressed) inputState.actionRange = true; else inputState.actionRange = false; // Y / Triangle
+                    // Add more buttons if needed (e.g., bumpers for rotation?)
+                    // if (gp.buttons[4]?.pressed) inputState.rotateLeft = 1; // L1
+                    // if (gp.buttons[5]?.pressed) inputState.rotateRight = 1; // R1
 
                     break; // Use first connected gamepad
                 }
             }
 
-            // --- Keyboard Input (Overrides Gamepad if pressed) ---
-            if (inputState.moveForward) moveImpulse.z -= 1;
-            if (inputState.moveBackward) moveImpulse.z += 1;
-            if (inputState.moveLeft) moveImpulse.x -= 1;
-            if (inputState.moveRight) moveImpulse.x += 1;
-            if (inputState.rotateLeft) rotationImpulse.y += rotateSpeed;
-            if (inputState.rotateRight) rotationImpulse.y -= rotateSpeed;
+            // --- Keyboard Input (Overrides Gamepad movement/rotation if pressed) ---
+            // Continuous movement/rotation flags are set by keydown/keyup listeners directly.
+            // Momentary action flags (interact, melee, range) are set by keydown listener.
+            // They need to be reset after use in the physics application step.
 
             // --- Touch Input (Overrides Keyboard/Gamepad if active) ---
-            if (Math.abs(inputState.touchMove.y) > 0.1 || Math.abs(inputState.touchMove.x) > 0.1) {
-                moveImpulse.z = -inputState.touchMove.y;
-                moveImpulse.x = inputState.touchMove.x;
-            }
-             if (Math.abs(inputState.touchLook.x) > 0.1) {
-                 rotationImpulse.y = -inputState.touchLook.x * rotateSpeed;
+             if (Math.abs(inputState.touchMove.y) > 0.1 || Math.abs(inputState.touchMove.x) > 0.1) {
+                 // Touch joystick provides normalized vector (-1 to 1)
+                 inputState.moveForward = Math.max(0, -inputState.touchMove.y);
+                 inputState.moveBackward = Math.max(0, inputState.touchMove.y);
+                 inputState.moveLeft = Math.max(0, -inputState.touchMove.x);
+                 inputState.moveRight = Math.max(0, inputState.touchMove.x);
              }
-             // inputState.actionMelee, actionRange, actionInteract are set directly by touch buttons
+              if (Math.abs(inputState.touchLook.x) > 0.1) {
+                  inputState.rotateLeft = Math.max(0, -inputState.touchLook.x);
+                  inputState.rotateRight = Math.max(0, inputState.touchLook.x);
+              }
+             // Touch action buttons set inputState flags directly via pointer events.
+        }
 
-            // --- Apply Movement ---
-            if (player.hasAbility('move')) {
-                const moveVec = new THREE.Vector3(moveImpulse.x, 0, moveImpulse.z);
-                moveVec.normalize().multiplyScalar(moveSpeed * deltaTime);
+        // --- Demo Mode Logic ---
+        function findNearestUnattachedArtifact(position, maxDist = ARENA_RADIUS * 2, excludeType = null) {
+            let closestArtifact = null;
+            let minDistSq = maxDist * maxDist;
 
-                // Apply impulse relative to player's current rotation
-                const worldImpulse = moveVec.applyQuaternion(player.mesh.quaternion);
-                player.rigidBody.applyImpulse(worldImpulse, true);
-                if (moveVec.lengthSq() > 0) player.lastMoveTime = Date.now();
-            } else if (moveImpulse.x !== 0 || moveImpulse.z !== 0) {
-                logMessage("Cannot move without a 'move' artifact!", 'warning');
+            artifacts.forEach(artifact => {
+                if (!artifact.attachedTo && artifact.mesh && artifact.abilityType !== excludeType) {
+                    const distSq = position.distanceToSquared(artifact.mesh.position);
+                    if (distSq < minDistSq) {
+                        minDistSq = distSq;
+                        closestArtifact = artifact;
+                    }
+                }
+            });
+            return closestArtifact;
+        }
+
+        function findNearestEnemy(position, maxDist = 30) { // Increased default range slightly
+            let closestEnemy = null;
+            let minDistSq = maxDist * maxDist;
+
+            entities.forEach(entity => {
+                // Check if entity exists, is not player, and has a valid physics body
+                if (!entity.isPlayer && entity.rigidBody && physicsWorld.getRigidBody(entity.rigidBody.handle)) {
+                    const distSq = position.distanceToSquared(entity.mesh.position);
+                    if (distSq < minDistSq) {
+                        minDistSq = distSq;
+                        closestEnemy = entity;
+                    }
+                }
+            });
+            return closestEnemy;
+        }
+
+        function findGoalArtifact(position) {
+             let goalArtifact = null;
+             artifacts.forEach(artifact => {
+                 if (!artifact.attachedTo && artifact.abilityType === 'tool_creation_tool') {
+                     goalArtifact = artifact;
+                 }
+             });
+             return goalArtifact;
+        }
+
+        function processDemoInput(deltaTime) {
+            if (!player || !player.rigidBody || !demoModeActive) return;
+
+            // Reset input state at the beginning of each frame
+            Object.keys(inputState).forEach(key => {
+                if (typeof inputState[key] === 'number') inputState[key] = 0;
+                if (typeof inputState[key] === 'boolean') inputState[key] = false;
+                if (typeof inputState[key] === 'object' && inputState[key] !== null && key !== 'touchMove' && key !== 'touchLook') { // Keep touch objects but zero them
+                    inputState[key].x = 0; inputState[key].y = 0;
+                }
+            });
+            inputState.touchMove.x = 0; inputState.touchMove.y = 0;
+            inputState.touchLook.x = 0; inputState.touchLook.y = 0;
+
+
+            const playerPos = player.mesh.position;
+            const playerRot = player.mesh.quaternion;
+            const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(playerRot); // Player's forward Z+
+
+            demoStateTimer += deltaTime;
+
+            // --- State Decision Logic ---
+            if (demoStateTimer > DEMO_STATE_TIMEOUT || demoState === 'IDLE' ||
+               (demoState === 'SEEK_ENEMY' && (!demoTargetEntity || !entities.has(demoTargetEntity.id))) || // Target lost
+               ((demoState === 'SEEK_ARTIFACT' || demoState === 'SEEK_GOAL') && (!demoTargetArtifact || !artifacts.has(demoTargetArtifact.id) || demoTargetArtifact.attachedTo)) // Target lost or picked up
+               )
+            {
+                demoStateTimer = 0;
+                demoTargetArtifact = null;
+                demoTargetEntity = null;
+
+                const nearestEnemy = findNearestEnemy(playerPos);
+                // Don't seek tool if already have it
+                const goalArtifact = player.hasAbility('tool_creation_tool') ? null : findGoalArtifact(playerPos);
+                // Prioritize needed artifacts if missing basic ones
+                const needsMove = !player.hasAbility('move');
+                const needsSee = !player.hasAbility('see'); // Or maybe prioritize combat artifacts?
+                const needsCombat = !player.hasAbility('attack_melee') && !player.hasAbility('attack_range');
+
+                let preferredArtifact = null;
+                if(needsMove) preferredArtifact = findNearestUnattachedArtifact(playerPos, ARENA_RADIUS * 2, 'move');
+                if(!preferredArtifact && needsSee) preferredArtifact = findNearestUnattachedArtifact(playerPos, ARENA_RADIUS * 2, 'see');
+                if(!preferredArtifact && needsCombat) {
+                    preferredArtifact = findNearestUnattachedArtifact(playerPos, ARENA_RADIUS * 2, 'attack_melee') || findNearestUnattachedArtifact(playerPos, ARENA_RADIUS * 2, 'attack_range');
+                }
+                // If basic needs met, find any useful artifact (excluding goal if already seeking it)
+                if (!preferredArtifact && !goalArtifact) {
+                    preferredArtifact = findNearestUnattachedArtifact(playerPos, ARENA_RADIUS * 2, 'tool_creation_tool');
+                }
+
+
+                // Priority: Attack nearby enemies > Get Goal > Get Needed Artifact > Get Any Artifact > Wander
+                if (nearestEnemy && (player.hasAbility('attack_melee') || player.hasAbility('attack_range'))) {
+                    demoState = 'SEEK_ENEMY';
+                    demoTargetEntity = nearestEnemy;
+                    logMessage(`Demo: Found enemy ${nearestEnemy.id}. State -> SEEK_ENEMY`, 'demo');
+                } else if (goalArtifact) {
+                    demoState = 'SEEK_GOAL';
+                    demoTargetArtifact = goalArtifact;
+                     logMessage(`Demo: Found goal artifact ${goalArtifact.id}. State -> SEEK_GOAL`, 'demo');
+                } else if (preferredArtifact) {
+                    demoState = 'SEEK_ARTIFACT';
+                    demoTargetArtifact = preferredArtifact;
+                    logMessage(`Demo: Found artifact ${preferredArtifact.id} (${preferredArtifact.abilityType}). State -> SEEK_ARTIFACT`, 'demo');
+                } else {
+                    demoState = 'WANDER';
+                    logMessage(`Demo: No targets found. State -> WANDER`, 'demo');
+                }
             }
 
-            // --- Apply Rotation ---
-             // Rotation only needs 'see' artifact? Or is it innate? Let's say innate for now.
-             // if (player.hasAbility('see')) {
-                player.rigidBody.applyTorqueImpulse({ x: 0, y: rotationImpulse.y * deltaTime, z: 0 }, true);
-                if (rotationImpulse.y !== 0) player.lastSeeTime = Date.now(); // Consider rotation as 'seeing'
-             // } else if (rotationImpulse.y !== 0) {
-             //    logMessage("Cannot look around without a 'see' artifact!", 'warning');
-             // }
+            // --- State Execution Logic ---
+            let targetPosition = null;
+            let targetDistance = Infinity;
+
+            // Determine target position based on state
+            if (demoState === 'SEEK_ENEMY' && demoTargetEntity && entities.has(demoTargetEntity.id)) {
+                targetPosition = demoTargetEntity.mesh.position;
+            } else if ((demoState === 'SEEK_ARTIFACT' || demoState === 'SEEK_GOAL') && demoTargetArtifact && artifacts.has(demoTargetArtifact.id) && !demoTargetArtifact.attachedTo) {
+                targetPosition = demoTargetArtifact.mesh.position;
+            } else if (demoState === 'WANDER') {
+                if (!player.wanderTarget || player.mesh.position.distanceTo(player.wanderTarget) < 3) {
+                     // Pick new wander target
+                     const wanderAngle = Math.random() * Math.PI * 2;
+                     const wanderDist = 10 + Math.random() * 15;
+                     player.wanderTarget = new THREE.Vector3(
+                         playerPos.x + Math.cos(wanderAngle) * wanderDist,
+                         playerPos.y,
+                         playerPos.z + Math.sin(wanderAngle) * wanderDist
+                     );
+                     // Clamp wander target
+                     const distFromCenter = Math.sqrt(player.wanderTarget.x**2 + player.wanderTarget.z**2);
+                     if (distFromCenter > ARENA_RADIUS - 1) {
+                         player.wanderTarget.x = (player.wanderTarget.x / distFromCenter) * (ARENA_RADIUS - 1);
+                         player.wanderTarget.z = (player.wanderTarget.z / distFromCenter) * (ARENA_RADIUS - 1);
+                     }
+                     logMessage(`Demo: Wandering towards ${player.wanderTarget.x.toFixed(1)}, ${player.wanderTarget.z.toFixed(1)}`, 'demo');
+                }
+                targetPosition = player.wanderTarget;
+            } else {
+                // Invalid state or target lost, reset
+                demoState = 'IDLE';
+                demoStateTimer = DEMO_STATE_TIMEOUT; // Force state reconsideration next frame
+                if (demoState !== 'IDLE') logMessage(`Demo: Target lost or invalid state (${demoState}). Resetting.`, 'demo'); // Log only if state wasn't already IDLE
+            }
+
+            // --- Action Execution based on Target ---
+            if (targetPosition) {
+                targetDistance = playerPos.distanceTo(targetPosition);
+                const directionToTarget = new THREE.Vector3().subVectors(targetPosition, playerPos);
+                directionToTarget.y = 0; // Ignore vertical difference for navigation
+                if (directionToTarget.lengthSq() < 0.01) { // Already at target horizontally
+                    directionToTarget.set(0,0,0);
+                } else {
+                    directionToTarget.normalize();
+                }
 
 
-            // --- Actions ---
-            if (inputState.actionInteract) {
-                player.interact();
-                inputState.actionInteract = false; // Trigger once per press/touch
+                // --- Rotation ---
+                if (directionToTarget.lengthSq() > 0) { // Only rotate if there's a direction
+                    // Calculate angle difference between current forward and target direction
+                    const angleToTarget = Math.atan2(directionToTarget.x, directionToTarget.z);
+                    const currentAngle = Math.atan2(forward.x, forward.z);
+                    let angleDiff = angleToTarget - currentAngle;
+                    while (angleDiff <= -Math.PI) angleDiff += 2 * Math.PI;
+                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+
+                    // Apply rotation input (proportional?)
+                    const rotationThreshold = 0.1; // Radians
+                    const rotationSpeedFactor = Math.min(1, Math.abs(angleDiff) / (Math.PI / 4)); // Rotate faster for larger angles
+                    if (angleDiff > rotationThreshold) {
+                        inputState.rotateLeft = rotationSpeedFactor;
+                    } else if (angleDiff < -rotationThreshold) {
+                        inputState.rotateRight = rotationSpeedFactor;
+                    }
+                }
+
+                // --- Movement ---
+                const facingThreshold = Math.PI / 3; // 60 degrees
+                const angleDiffRad = Math.abs(Math.atan2(forward.x, forward.z) - Math.atan2(directionToTarget.x, directionToTarget.z));
+                const isFacingTarget = directionToTarget.lengthSq() === 0 || (angleDiffRad <= facingThreshold || angleDiffRad >= (2*Math.PI - facingThreshold));
+
+                if (isFacingTarget && targetDistance > 1.5) { // Don't move if very close or not facing target
+                    inputState.moveForward = 1;
+                }
+
+                // --- Interaction / Attack ---
+                if (demoState === 'SEEK_ARTIFACT' || demoState === 'SEEK_GOAL') {
+                    if (targetDistance < 1.8) { // Interaction range
+                        inputState.actionInteract = true; // Set flag for physics step
+                        logMessage(`Demo: Attempting to interact with ${demoTargetArtifact?.id}`, 'demo');
+                        // Force state reconsideration after interaction attempt
+                        demoState = 'IDLE';
+                        demoStateTimer = DEMO_STATE_TIMEOUT;
+                    }
+                } else if (demoState === 'SEEK_ENEMY') {
+                    const meleeRange = 2.0;
+                    const preferredRangeMin = 5.0; // Try to stay outside this for ranged
+                    const preferredRangeMax = 15.0; // Try to stay inside this for ranged
+
+                    if (player.hasAbility('attack_melee') && targetDistance < meleeRange) {
+                        inputState.actionMelee = true; // Set flag
+                         logMessage(`Demo: Attempting melee attack on ${demoTargetEntity?.id}`, 'demo');
+                    } else if (player.hasAbility('attack_range') && targetDistance < 20.0) { // Max range attack check
+                         inputState.actionRange = true; // Set flag
+                         logMessage(`Demo: Attempting range attack on ${demoTargetEntity?.id}`, 'demo');
+                         // Strafing / Distance keeping for ranged? Maybe too complex for demo.
+                         // Simple version: back up if too close, move forward if too far & facing
+                         if (isFacingTarget) {
+                             if (targetDistance < preferredRangeMin) {
+                                 inputState.moveForward = 0;
+                                 inputState.moveBackward = 0.5; // Back up
+                             } else if (targetDistance > preferredRangeMax) {
+                                 inputState.moveForward = 1; // Move closer
+                                 inputState.moveBackward = 0;
+                             } else {
+                                 // In preferred range, maybe strafe slightly?
+                                 if(Math.random() < 0.1) inputState.moveLeft = 0.5;
+                                 else if(Math.random() < 0.1) inputState.moveRight = 0.5;
+                                 else inputState.moveForward = 0; // Stop moving forward/back
+                             }
+                         }
+                    }
+                    // Check if enemy is defeated is handled in state transition logic
+                }
             }
-            if (inputState.actionMelee) {
-                player.performAttack('attack_melee');
-                 // Cooldown is handled within performAttack
-                 // inputState.actionMelee = false; // Don't reset here, allow holding button if desired
+
+            // The inputState is now set, physics application happens in animate()
+        }
+
+
+        // --- Recording Logic ---
+        function startRecording() {
+            if (isRecording) return;
+            isRecording = true;
+            recordedFrames = [];
+            recordedEvents = [];
+            frameCounter = 0;
+            startRecordingButton.disabled = true;
+            stopRecordingButton.disabled = false;
+            recordingStatusDiv.textContent = 'Rec: ON';
+            logMessage("Started debug recording.", 'system');
+            logEvent('recording_started', {});
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            isRecording = false;
+            startRecordingButton.disabled = false;
+            stopRecordingButton.disabled = true;
+            recordingStatusDiv.textContent = 'Rec: OFF';
+            logMessage(`Stopped debug recording. Captured ${recordedFrames.length} frames and ${recordedEvents.length} events.`, 'system');
+            logEvent('recording_stopped', { frameCount: frameCounter, eventCount: recordedEvents.length });
+            saveRecordingData();
+        }
+
+        function logFrameData(deltaTime) { // Pass deltaTime
+            if (!isRecording) return;
+
+            const frameData = {
+                frame: frameCounter,
+                timestamp: Date.now(),
+                deltaTime: deltaTime, // Log delta time for this frame
+                demo: {
+                    active: demoModeActive,
+                    state: demoState,
+                    targetEntityId: demoTargetEntity?.id || null,
+                    targetArtifactId: demoTargetArtifact?.id || null,
+                },
+                player: null,
+                entities: [], // Log nearby entities
+                artifacts: [] // Log nearby artifacts
+            };
+
+            // Log Player State
+            if (player && player.rigidBody && physicsWorld.getRigidBody(player.rigidBody.handle)) {
+                const pos = player.mesh.position;
+                const rot = player.mesh.quaternion;
+                // Capture input state *before* it's potentially reset for the next frame
+                const currentInputState = { ...inputState };
+                frameData.player = {
+                    id: player.id,
+                    position: [pos.x, pos.y, pos.z],
+                    rotation: [rot.x, rot.y, rot.z, rot.w],
+                    hp: player.hp,
+                    artifacts: Array.from(player.artifacts.keys()),
+                    appliedInput: currentInputState // Log the input state used this frame
+                };
+
+                 // Log nearby entities/artifacts based on player position
+                 const logRadiusSq = 25 * 25;
+
+                 entities.forEach(entity => {
+                     if (entity.id !== player.id && entity.rigidBody && physicsWorld.getRigidBody(entity.rigidBody.handle) && entity.mesh.position.distanceToSquared(player.mesh.position) < logRadiusSq) {
+                         const ePos = entity.mesh.position;
+                         const eRot = entity.mesh.quaternion;
+                         frameData.entities.push({
+                             id: entity.id,
+                             position: [ePos.x, ePos.y, ePos.z],
+                             rotation: [eRot.x, eRot.y, eRot.z, eRot.w],
+                             hp: entity.hp,
+                             artifacts: Array.from(entity.artifacts.keys())
+                         });
+                     }
+                 });
+
+                 artifacts.forEach(artifact => {
+                     if (artifact.mesh && artifact.mesh.position.distanceToSquared(player.mesh.position) < logRadiusSq) {
+                          const aPos = artifact.mesh.position;
+                          frameData.artifacts.push({
+                              id: artifact.id,
+                              abilityType: artifact.abilityType,
+                              position: [aPos.x, aPos.y, aPos.z],
+                              attachedTo: artifact.attachedTo,
+                              creationTime: artifact.creationTime
+                          });
+                     }
+                 });
+
+            } else {
+                 frameData.player = { id: player?.id || 'player_invalid', position: [0,0,0], rotation: [0,0,0,1], hp: 0, artifacts: [], appliedInput: {} };
             }
-            if (inputState.actionRange) {
-                player.performAttack('attack_range');
-                 // Cooldown is handled within performAttack
-                 // inputState.actionRange = false;
+
+            recordedFrames.push(frameData);
+        }
+
+        function saveRecordingData() {
+            const recording = {
+                version: 2, // Increment version if format changes
+                startTime: recordedFrames.length > 0 ? recordedFrames[0].timestamp : Date.now(),
+                endTime: Date.now(),
+                totalFrames: frameCounter,
+                arenaRadius: ARENA_RADIUS,
+                initialEntities: [], // Could log initial setup if needed
+                initialArtifacts: [], // Could log initial setup if needed
+                frames: recordedFrames,
+                events: recordedEvents
+            };
+
+            try {
+                const dataStr = JSON.stringify(recording); // Use compact format for potentially large files
+                const dataBlob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(dataBlob);
+
+                const downloadLink = document.createElement('a');
+                downloadLink.href = url;
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                downloadLink.download = `abyss_arena_debug_${timestamp}.json`;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                URL.revokeObjectURL(url); // Clean up object URL
+
+                logMessage(`Debug data saved as ${downloadLink.download}`, 'system');
+
+            } catch (error) {
+                 logMessage(`Error saving recording data: ${error}`, 'error');
+                 console.error("Failed to stringify or save recording:", error);
+                 // Maybe offer to copy to clipboard as fallback?
+                 // navigator.clipboard.writeText(JSON.stringify(recording)).then(...)
             }
         }
+
 
         // --- LLM Integration ---
         function updateLLMControls() {
             const selectedEngine = llmEngineSelect.value;
             webllmOptionsDiv.style.display = selectedEngine === 'webllm' ? 'block' : 'none';
             llmjsOptionsDiv.style.display = selectedEngine === 'llmjs' ? 'block' : 'none';
-            // Add similar lines for other API options if implemented
 
             llmStatusDiv.textContent = `Status: ${llmLoading ? 'Loading...' : (llmReady ? `Ready (${llmType} - ${llmModelId})` : 'Not Loaded')}`;
             llmChatDiv.style.display = llmReady ? 'flex' : 'none';
+            loadLlmButton.disabled = llmLoading;
         }
 
         async function loadLLM() {
@@ -1056,10 +1601,10 @@
                 return;
             }
 
-            unloadLLM(); // Unload previous engine if any
+            unloadLLM();
             llmLoading = true;
             llmType = selectedEngine;
-            llmModelId = ''; // Reset model ID
+            llmModelId = '';
             updateLLMControls();
             logMessage(`Loading LLM Engine: ${llmType}...`, 'llm');
 
@@ -1078,71 +1623,57 @@
                             }
                         }
                     );
-                    llmEngine = engine; // Assign to global scope
+                    llmEngine = engine;
                     llmReady = true;
                     logMessage("WebLLM Engine Ready.", 'llm');
                 } else if (llmType === 'llmjs') {
-                    llmModelId = llmjsModelSelect.options[llmjsModelSelect.selectedIndex].text; // Get display name
+                    llmModelId = llmjsModelSelect.options[llmjsModelSelect.selectedIndex].text;
                     const modelUrl = llmjsModelSelect.value;
                     logMessage(`Loading llm.js model: ${llmModelId} from ${modelUrl}`, 'llm');
                     llmStatusDiv.textContent = `Status: Downloading ${llmModelId}...`;
 
-                    // Dynamically import llm.js
-                    const { LLM } = await import('./llm.js/llm.js');
+                    const { LLM } = await import('./llm.js/llm.js'); // Ensure path is correct
 
                     llmJsInstance = new LLM(
-                        'GGUF_CPU', // Type
-                        modelUrl,   // Model URL
-                        () => {     // On loaded
+                        'GGUF_CPU', modelUrl,
+                        () => { // on_loaded
                             logMessage("llm.js Model Loaded.", 'llm');
                             llmReady = true;
-                            llmLoading = false;
+                            llmLoading = false; // Set loading false here
                             updateLLMControls();
                         },
-                        (text) => { // Write result (we'll handle response differently)
-                             console.log("LLM.js raw output:", text); // Log raw output if needed
-                        },
-                        () => {     // Run complete
-                            logMessage("llm.js Run Complete.", 'llm');
-                        },
-                         (error) => { // On Error
+                        (text) => { /* write_result - handled in run */ },
+                        () => { /* run_complete - handled in run */ },
+                         (error) => { // on_error
                             logMessage(`llm.js Error: ${error}`, 'error');
-                            unloadLLM(); // Reset state on error
+                            unloadLLM();
                          }
                     );
                     llmStatusDiv.textContent = `Status: Loading ${llmModelId} into llm.js worker...`;
-                    llmJsInstance.load_worker(); // Start loading
-                     // Note: llm.js loading is asynchronous, on_loaded callback handles readiness.
-                     // We set llmLoading = false inside the on_loaded callback.
-
-                } else if (llmType === 'openai' || llmType === 'gemini' || llmType === 'claude' || llmType === 'ollama') {
-                    logMessage(`API for ${llmType} not implemented yet.`, 'warning');
-                     throw new Error("API not implemented");
-                    // TODO: Implement API calls using fetch
-                    // Need to handle API keys and endpoint URLs securely
-                    // llmReady = true; // Placeholder
+                    llmJsInstance.load_worker();
+                    // Readiness is handled by the on_loaded callback.
                 } else {
-                     throw new Error("Invalid LLM engine selected");
+                     throw new Error("Invalid or unimplemented LLM engine selected");
                 }
 
             } catch (error) {
                 logMessage(`Failed to load LLM: ${error}`, 'error');
-                unloadLLM();
+                unloadLLM(); // Ensure cleanup on error
             } finally {
-                // Only set loading false here if not handled by async callback (like llm.js)
+                // Set loading false only if not handled by async callback (like llm.js)
                  if (llmType !== 'llmjs') {
                     llmLoading = false;
                  }
-                updateLLMControls();
+                updateLLMControls(); // Update UI regardless of success/failure
             }
         }
 
         function unloadLLM() {
             if (llmEngine && llmType === 'webllm') {
-                llmEngine.unload(); // Release WebLLM resources
+                llmEngine.unload().catch(e => console.warn("Error unloading WebLLM:", e));
             }
             if (llmJsInstance && llmType === 'llmjs') {
-                 // llm.js might not have an explicit unload, just stop using it
+                 // llm.js might need termination? Check its docs. Assume simple nullification for now.
                  llmJsInstance = null;
             }
             llmEngine = null;
@@ -1151,67 +1682,90 @@
             llmType = 'none';
             llmModelId = '';
             chatHistory = [];
-            availableLLMTools = { ...getBaseLLMTools() }; // Reset tools to base
+            availableLLMTools = { ...getBaseLLMTools() };
             logMessage("LLM Unloaded.", 'llm');
             updateLLMControls();
         }
 
         function getBaseLLMTools() {
-             // Define the initial tool_creation_tool available to the LLM
              return {
                  'tool_creation_tool': {
                      description: "Creates a new tool (artifact ability) for the Abyss LLM. Takes a 'name' for the tool and a 'description' of what the tool should do as a javascript function. The function should accept a single object argument containing named parameters.",
-                     parameters: { // Describe parameters for the LLM
+                     parameters: {
                          type: "object",
                          properties: {
-                             name: { type: "string", description: "The name of the new tool/function to create." },
-                             description: { type: "string", description: "A detailed description of what the new tool's javascript function should accomplish." },
-                             // We might need the LLM to also specify the parameters the *new* function will take
-                             // For now, let's assume the LLM includes parameter descriptions in the main description.
+                             name: { type: "string", description: "The name of the new tool/function to create (use snake_case)." },
+                             description: { type: "string", description: "A detailed description of what the new tool's javascript function should accomplish, including the parameters it needs." },
                          },
                          required: ["name", "description"]
                      },
-                     function: async (args) => { // The JS function that executes the tool call
+                     function: async (args) => {
                          logMessage(`Executing tool_creation_tool: Name='${args.name}', Desc='${args.description}'`, 'llm');
+                         logEvent('llm_tool_executed', { toolName: 'tool_creation_tool', args: args });
                          playSound('tool_create');
                          if (!args.name || !args.description) {
+                             logEvent('llm_tool_failed', { toolName: 'tool_creation_tool', args: args, error: 'Missing name or description' });
                              return "Error: Missing 'name' or 'description' for tool_creation_tool.";
                          }
+                         if (!/^[a-z_]+$/.test(args.name)) {
+                              logEvent('llm_tool_failed', { toolName: 'tool_creation_tool', args: args, error: 'Invalid name format' });
+                              return "Error: Tool name must be snake_case (lowercase letters and underscores only).";
+                         }
                          if (availableLLMTools[args.name]) {
+                              logEvent('llm_tool_failed', { toolName: 'tool_creation_tool', args: args, error: 'Tool already exists' });
                              return `Error: A tool named '${args.name}' already exists.`;
                          }
 
-                         // Ask the LLM to generate the JS code for the new tool
-                         const creationPrompt = `Generate the JavaScript code for a new tool named '${args.name}'.
+                         const creationPrompt = `Generate the JavaScript code for the *body* of a new tool function named '${args.name}'.
+The function will receive a single argument named 'params' which is a JavaScript object containing the parameters.
 The tool should do the following: ${args.description}.
-The function must accept a single object argument (e.g., 'params') containing named parameters.
-Only output the raw JavaScript code for the function body inside a \`\`\`javascript block. Do not include the function signature itself, just the body.
-Example: If the description is 'adds two numbers x and y', the output should be:
+Focus on game interaction if applicable (e.g., accessing 'player', 'entities', 'artifacts', 'createArtifact', 'logMessage', 'logEvent'). Be careful with direct manipulation.
+Output *only* the raw JavaScript code for the function body inside a \`\`\`javascript block. Do not include 'function(...) {' or the closing '}'.
+Example for 'adds two numbers x and y':
 \`\`\`javascript
 if (typeof params.x !== 'number' || typeof params.y !== 'number') { return 'Error: x and y must be numbers.'; }
-return params.x + params.y;
+const sum = params.x + params.y;
+logEvent('tool_add_executed', { x: params.x, y: params.y, result: sum }); // Example logging within tool
+return \`Sum is: \${sum}\`; // Return a string result for the chat
 \`\`\`
 Now, generate the code for '${args.name}':`;
 
                          try {
-                             const codeResponse = await sendAbyssMessage([{ role: 'user', content: creationPrompt }], true); // Internal call, don't show user
+                             // Use a separate history for internal calls to avoid polluting user chat
+                             const internalHistory = [{ role: 'user', content: creationPrompt }];
+                             const codeResponse = await sendAbyssMessage(internalHistory, true);
 
-                             // Extract JS code from the response
                              const codeMatch = codeResponse.match(/```javascript\s*([\s\S]*?)\s*```/);
                              if (!codeMatch || !codeMatch[1]) {
-                                 logMessage("LLM failed to generate valid JS code for the new tool.", 'error');
-                                 return "Error: Could not generate JavaScript code for the new tool.";
+                                 logMessage("LLM failed to generate valid JS code block for the new tool.", 'error');
+                                 logEvent('llm_tool_failed', { toolName: 'tool_creation_tool', args: args, error: 'LLM failed to generate JS code block' });
+                                 return "Error: Could not generate JavaScript code block for the new tool.";
                              }
                              const functionBody = codeMatch[1].trim();
 
-                             // Create the new function safely using new Function()
-                             // We need to figure out the parameters the function expects.
-                             // Let's ask the LLM for that too, or parse the description/code? Risky.
-                             // Simplification: Assume the LLM description includes needed params, and the generated code uses `params.paramName`.
-                             const newToolFunction = new Function('params', functionBody);
+                             // Create the new function (potentially unsafe, use with caution!)
+                             // Consider sandboxing if this were production.
+                             const newToolFunction = new Function('params', `
+                                 // Access global scope (player, entities, etc.) - Be careful!
+                                 const player = window.player; // Assuming player is global
+                                 const entities = window.entities;
+                                 const artifacts = window.artifacts;
+                                 const createArtifact = window.createArtifact;
+                                 const logMessage = window.logMessage;
+                                 const logEvent = window.logEvent;
+                                 const THREE = window.THREE; // Make THREE available if needed
+                                 const RAPIER = window.RAPIER; // Make RAPIER available if needed
 
-                             // Ask LLM to generate the parameter definition for the *new* tool
-                             const paramPrompt = `Based on the description "${args.description}" and the generated code, define the JSON schema for the parameters object that the new tool '${args.name}' expects.
+                                 try {
+                                     ${functionBody}
+                                 } catch (e) {
+                                     logMessage('Error executing tool "${args.name}": ' + e.message, 'error');
+                                     logEvent('llm_tool_execution_error', { toolName: "${args.name}", error: e.message, stack: e.stack });
+                                     return 'Error during tool execution: ' + e.message;
+                                 }
+                             `);
+
+                             const paramPrompt = `Based on the description "${args.description}", define the JSON schema for the 'params' object that the new tool '${args.name}' expects.
 Output *only* the JSON schema object inside a \`\`\`json block.
 Example for 'adds two numbers x and y':
 \`\`\`json
@@ -1225,71 +1779,63 @@ Example for 'adds two numbers x and y':
 }
 \`\`\`
 Now, generate the JSON schema for '${args.name}':`;
-
-                             const paramResponse = await sendAbyssMessage([{ role: 'user', content: paramPrompt }], true);
+                             internalHistory.push({ role: 'assistant', content: codeResponse }); // Add previous response
+                             internalHistory.push({ role: 'user', content: paramPrompt });
+                             const paramResponse = await sendAbyssMessage(internalHistory, true);
                              const paramMatch = paramResponse.match(/```json\s*([\s\S]*?)\s*```/);
-                             let newToolParamsSchema = { type: "object", properties: {} }; // Default empty schema
+                             let newToolParamsSchema = { type: "object", properties: {} };
                              if (paramMatch && paramMatch[1]) {
                                  try {
                                      newToolParamsSchema = JSON.parse(paramMatch[1].trim());
                                  } catch (e) {
-                                     logMessage(`Failed to parse JSON schema for new tool ${args.name}: ${e}`, 'error');
-                                     return `Error: Failed to parse parameter schema for new tool ${args.name}. Tool not created.`;
+                                     logMessage(`Failed to parse JSON schema for new tool ${args.name}: ${e}. Using default.`, 'error');
+                                     logEvent('llm_tool_warning', { toolName: args.name, warning: 'Failed to parse parameter schema', error: e.message });
                                  }
                              } else {
                                  logMessage(`LLM did not provide a valid parameter schema for ${args.name}. Using default.`, 'warning');
+                                 logEvent('llm_tool_warning', { toolName: args.name, warning: 'No parameter schema provided' });
                              }
 
-
-                             // Add the new tool to the available tools
+                             // Add the new tool
                              availableLLMTools[args.name] = {
                                  description: args.description,
                                  parameters: newToolParamsSchema,
-                                 function: newToolFunction
+                                 function: newToolFunction // The actual JS function
                              };
 
                              logMessage(`Successfully created and added new tool: ${args.name}`, 'llm');
+                             logEvent('llm_tool_created', { toolName: args.name, description: args.description, parameters: newToolParamsSchema });
 
-                             // Create the corresponding artifact in the world
-                             // Find a suitable location (maybe near player?)
-                             const playerPos = player?.mesh?.position || new THREE.Vector3(0,0,0);
-                             const artifactPos = {
-                                 x: playerPos.x + (Math.random() - 0.5) * 10,
-                                 y: 0.5,
-                                 z: playerPos.z + (Math.random() - 0.5) * 10
-                             };
-                             // Clamp position to arena
-                             const dist = Math.sqrt(artifactPos.x**2 + artifactPos.z**2);
-                             if (dist > ARENA_RADIUS - 2) {
-                                 artifactPos.x = (artifactPos.x / dist) * (ARENA_RADIUS - 2);
-                                 artifactPos.z = (artifactPos.z / dist) * (ARENA_RADIUS - 2);
-                             }
-
-                             // For now, new tools don't automatically become physical artifacts
-                             // Let's just make the tool available in chat.
-                             // createArtifact(args.name, artifactPos); // Maybe later? How to link function?
+                             // Maybe create a corresponding artifact? Not directly linked for now.
+                             // createArtifact(args.name, ...);
 
                              return `New tool '${args.name}' created successfully and is now available for use.`;
 
                          } catch (error) {
                              logMessage(`Error during tool creation process: ${error}`, 'error');
+                             logEvent('llm_tool_failed', { toolName: 'tool_creation_tool', args: args, error: `Tool creation process error: ${error.message}` });
                              return `Error creating tool '${args.name}'.`;
                          }
                      }
                  }
-                 // Add other base tools if needed, e.g., 'get_player_status', 'list_nearby_artifacts'
+                 // Add other base tools here if desired (e.g., list_artifacts, get_player_status)
              };
         }
 
         function formatToolsForLLM() {
-            let toolPrompt = "You have access to the following tools. To use a tool, respond *only* with a JSON object matching the tool's parameter schema, enclosed in a special block like this: <tool_call name='tool_name'>```json\n{ \"param1\": \"value1\", ... }\n```</tool_call>. Do not add any other text before or after the tool call block if you decide to use a tool.\n\nAvailable Tools:\n";
-            for (const name in availableLLMTools) {
-                const tool = availableLLMTools[name];
-                toolPrompt += `- ${name}:\n`;
-                toolPrompt += `  Description: ${tool.description}\n`;
-                toolPrompt += `  Parameters (JSON Schema): ${JSON.stringify(tool.parameters)}\n`;
-            }
-            return toolPrompt;
+            // Use a format that models like Qwen2.5 Coder might understand better for custom tool use
+             let toolPrompt = "You are an AI assistant controlling the Abyss. You can interact with the game world using the following tools. To use a tool, respond *only* with a JSON object representing the function call, enclosed in <tool_call> tags.\n";
+             toolPrompt += "Format: <tool_call name=\"tool_name\">{ \"param1\": \"value1\", ... }</tool_call>\n\n";
+             toolPrompt += "Available Tools:\n";
+             for (const name in availableLLMTools) {
+                 const tool = availableLLMTools[name];
+                 toolPrompt += `- Name: ${name}\n`;
+                 toolPrompt += `  Description: ${tool.description}\n`;
+                 // Describe parameters clearly for the LLM
+                 toolPrompt += `  Parameters (JSON object):\n    ${JSON.stringify(tool.parameters, null, 4).replace(/\n/g, '\n    ')}\n`;
+             }
+             toolPrompt += "\nOnly respond with a <tool_call> structure if you intend to use a tool. Otherwise, respond with a natural language message.";
+             return toolPrompt;
         }
 
         async function sendAbyssMessage(messages, internalCall = false) {
@@ -1299,133 +1845,118 @@ Now, generate the JSON schema for '${args.name}':`;
             }
             if (!internalCall) {
                 logMessage("Sending message to Abyss...", 'llm');
+                logEvent('llm_request_sent', { historyLength: messages.length, lastMessage: messages[messages.length - 1] });
             }
 
             const temperature = parseFloat(llmTemperatureSlider.value);
             let responseText = "";
 
-            // Prepare messages for the specific LLM engine
-            let llmPayload;
-
-             // Add tool definitions before the last user message, but don't store them in history
+            // Prepare messages, injecting tool definitions before the last user message
              const toolDefinitions = formatToolsForLLM();
              const messagesWithTools = [...messages];
-             if (messagesWithTools.length > 0) {
+             if (messagesWithTools.length > 0 && messagesWithTools[messagesWithTools.length - 1].role === 'user') {
                  const lastUserMessage = messagesWithTools.pop();
-                 // Inject tool info as a pseudo-system message (or assistant context)
-                 // We'll use a user role here as 'system' isn't always reliable/supported
-                 messagesWithTools.push({ role: 'user', content: `--- TOOL DEFINITIONS ---\n${toolDefinitions}\n--- END TOOL DEFINITIONS ---` });
+                 // Inject tool info as a specific instruction block using 'user' role for compatibility
+                 messagesWithTools.push({ role: 'user', content: `--- AVAILABLE TOOLS ---\n${toolDefinitions}\n--- END TOOLS ---` });
                  messagesWithTools.push(lastUserMessage);
              } else {
-                 // Should not happen in normal chat flow
-                 messagesWithTools.push({ role: 'user', content: `--- TOOL DEFINITIONS ---\n${toolDefinitions}\n--- END TOOL DEFINITIONS ---` });
+                 // If history is empty or doesn't end with user, add tools anyway
+                  messagesWithTools.push({ role: 'user', content: `--- AVAILABLE TOOLS ---\n${toolDefinitions}\n--- END TOOLS ---` });
+                  if(messages.length > 0) messagesWithTools.push(messages[messages.length - 1]); // Re-add last message if it wasn't user
              }
 
 
+            // Limit context size (simple truncation for now)
+            const MAX_TOKENS_APPROX = 3000; // Very rough estimate
+            let currentTokens = 0;
+            const processedMessages = [];
+            for(let i = messagesWithTools.length - 1; i >= 0; i--) {
+                const msg = messagesWithTools[i];
+                const tokens = (msg.content.length / 4); // Rough estimate
+                if (currentTokens + tokens > MAX_TOKENS_APPROX && processedMessages.length > 0) {
+                    logMessage(`Truncating LLM history (approx ${currentTokens} tokens)`, 'llm');
+                    break; // Stop adding messages
+                }
+                processedMessages.unshift(msg);
+                currentTokens += tokens;
+            }
+
+
             try {
+                let rawResponseContent = "";
                 if (llmType === 'webllm') {
-                    // Check if model is DeepSeek-R1 for special handling
                     const isDeepSeekR1 = llmModelId.toLowerCase().includes('deepseek-r1');
-
-                    // WebLLM chat completions create expects specific format
-                     const webLlmMessages = messagesWithTools.map(msg => ({ role: msg.role, content: msg.content }));
-
-                     // Add <think> tag for DeepSeek-R1 if needed (though we expect it from model)
-                     // The model itself should generate <think>, we just need to handle it in response.
+                    const webLlmMessages = processedMessages.map(msg => ({ role: msg.role, content: msg.content }));
 
                     const response = await llmEngine.chat.completions.create({
                         messages: webLlmMessages,
                         temperature: temperature,
-                        stream: false, // Keep stream false for easier tool parsing initially
-                        // tools: not using native tools here
+                        stream: false, // Keep false for easier tool parsing
                     });
-                    responseText = response.choices[0]?.message?.content || "";
+                    rawResponseContent = response.choices[0]?.message?.content || "";
 
-                    // Handle potential <think> tag from DeepSeek-R1
-                     if (isDeepSeekR1 && responseText.startsWith("<think>")) {
-                         // Find the end of the think block if necessary, or just log/ignore it
-                         const thinkEndIndex = responseText.indexOf("</think>"); // Assuming it exists
+                    // Handle DeepSeek-R1 <think> tag
+                     if (isDeepSeekR1 && rawResponseContent.startsWith("<think>")) {
+                         const thinkEndIndex = rawResponseContent.indexOf("</think>");
                          if (thinkEndIndex !== -1) {
-                             const thought = responseText.substring("<think>".length, thinkEndIndex).trim();
-                             logMessage(`LLM Thought: ${thought}`, 'llm');
-                             responseText = responseText.substring(thinkEndIndex + "</think>".length).trim();
+                             const thought = rawResponseContent.substring("<think>".length, thinkEndIndex).trim();
+                             if (!internalCall) logMessage(`LLM Thought: ${thought}`, 'llm');
+                             logEvent('llm_thought', { text: thought });
+                             rawResponseContent = rawResponseContent.substring(thinkEndIndex + "</think>".length).trim();
                          } else {
-                             // If no closing tag, maybe just remove the opening tag? Or log warning.
-                             logMessage("DeepSeek-R1 started with <think> but no closing tag found.", "warning");
-                             responseText = responseText.substring("<think>".length).trim();
+                             rawResponseContent = rawResponseContent.substring("<think>".length).trim(); // Remove tag anyway
                          }
                      }
 
-
                 } else if (llmType === 'llmjs') {
-                    // Format for llm.js based on model type (ChatML for Qwen, specific for DeepSeek)
                     const isDeepSeekR1 = llmModelId.toLowerCase().includes('deepseek-r1');
                     let promptString = "";
 
                     if (isDeepSeekR1) {
-                        // DeepSeek-R1 GGUF Template: <｜User｜>\n{prompt}<｜Assistant｜>\n
-                         messagesWithTools.forEach(msg => {
-                             if (msg.role === 'user') {
-                                 promptString += `<｜User｜>\n${msg.content}`;
-                             } else if (msg.role === 'assistant') {
-                                 promptString += `<｜Assistant｜>\n${msg.content}`;
-                             }
-                             // Ignore other roles for this template?
+                         processedMessages.forEach(msg => {
+                             promptString += msg.role === 'user' ? `<｜User｜>\n${msg.content}` : `<｜Assistant｜>\n${msg.content}`;
                          });
-                         promptString += "<｜Assistant｜>\n"; // Prompt for assistant response
+                         promptString += "<｜Assistant｜>\n";
                     } else { // Assume ChatML for Qwen 2.5
-                        // <|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n
-                         messagesWithTools.forEach(msg => {
+                         processedMessages.forEach(msg => {
                              promptString += `<|im_start|>${msg.role}\n${msg.content}<|im_end|>\n`;
                          });
                          promptString += `<|im_start|>assistant\n`;
                     }
 
-                    // Need a way to capture the response from llm.js's callback
+                    let accumulatedResponse = "";
                     let resolveResponse;
                     const responsePromise = new Promise(resolve => { resolveResponse = resolve; });
 
-                    llmJsInstance.write_result = (text) => {
-                        // Accumulate text? llm.js might call this multiple times for streaming.
-                        // For non-streaming simulation:
-                        responseText += text; // Append results
-                        // We need a way to know when it's finished. The run_complete callback helps.
-                    };
-                    llmJsInstance.run_complete = () => {
-                         logMessage("llm.js generation finished.", 'llm');
-                         // Handle potential <think> tag from DeepSeek-R1
-                         if (isDeepSeekR1 && responseText.startsWith("<think>")) {
-                             const thinkEndIndex = responseText.indexOf("</think>");
-                             if (thinkEndIndex !== -1) {
-                                 const thought = responseText.substring("<think>".length, thinkEndIndex).trim();
-                                 logMessage(`LLM Thought: ${thought}`, 'llm');
-                                 responseText = responseText.substring(thinkEndIndex + "</think>".length).trim();
-                             } else {
-                                 responseText = responseText.substring("<think>".length).trim();
-                             }
+                    llmJsInstance.write_result = (text) => { accumulatedResponse += text; };
+                    llmJsInstance.run_complete = () => { resolveResponse(accumulatedResponse); };
+
+                    llmJsInstance.run({ prompt: promptString, temperature: temperature, top_k: 40 });
+                    rawResponseContent = await responsePromise;
+
+                     // Handle DeepSeek-R1 <think> tag for llm.js output
+                     if (isDeepSeekR1 && rawResponseContent.startsWith("<think>")) {
+                         const thinkEndIndex = rawResponseContent.indexOf("</think>");
+                         if (thinkEndIndex !== -1) {
+                             const thought = rawResponseContent.substring("<think>".length, thinkEndIndex).trim();
+                             if (!internalCall) logMessage(`LLM Thought: ${thought}`, 'llm');
+                              logEvent('llm_thought', { text: thought });
+                             rawResponseContent = rawResponseContent.substring(thinkEndIndex + "</think>".length).trim();
+                         } else {
+                             rawResponseContent = rawResponseContent.substring("<think>".length).trim();
                          }
-                         resolveResponse(responseText); // Resolve the promise when generation is complete
-                    };
-
-                    llmJsInstance.run({
-                        prompt: promptString,
-                        temperature: temperature,
-                        top_k: 40, // Example parameters for llm.js
-                        // Add other relevant parameters if needed
-                    });
-
-                    responseText = await responsePromise; // Wait for the run_complete callback
-
+                     }
                 } else {
-                    responseText = "Selected LLM API not implemented.";
+                    throw new Error("LLM type not implemented for sending messages.");
                 }
 
-                if (!internalCall) logMessage(`Abyss Raw Response: ${responseText}`, 'llm');
+                if (!internalCall) logMessage(`Abyss Raw Response: ${rawResponseContent}`, 'llm');
+                 logEvent('llm_response_received', { rawContent: rawResponseContent });
 
-                // --- Custom Tool Call Parsing ---
-                // Look for <tool_call name='tool_name'>```json ... ```</tool_call>
-                const toolCallRegex = /<tool_call name='([^']+)'>\s*```json\s*([\s\S]*?)\s*```\s*<\/tool_call>/;
-                const match = responseText.match(toolCallRegex);
+                // --- Custom Tool Call Parsing (Updated Regex) ---
+                // Look for <tool_call name="tool_name">{ ...JSON... }</tool_call>
+                const toolCallRegex = /<tool_call name="([^"]+)">([\s\S]*?)<\/tool_call>/;
+                const match = rawResponseContent.match(toolCallRegex);
 
                 if (match) {
                     const toolName = match[1];
@@ -1436,75 +1967,80 @@ Now, generate the JSON schema for '${args.name}':`;
                         try {
                             const toolArgs = JSON.parse(toolArgsJson);
                             logMessage(`Calling tool ${toolName} with args: ${JSON.stringify(toolArgs)}`, 'llm');
+                            logEvent('llm_tool_execution_started', { toolName: toolName, args: toolArgs });
 
                             // Execute the tool function (can be async)
                             const toolResult = await availableLLMTools[toolName].function(toolArgs);
-                            logMessage(`Tool ${toolName} result: ${toolResult}`, 'llm');
+                            const resultString = (typeof toolResult === 'object' ? JSON.stringify(toolResult) : String(toolResult)) || "Tool executed."; // Ensure result is string
+                            logMessage(`Tool ${toolName} result: ${resultString}`, 'llm');
+                            logEvent('llm_tool_execution_finished', { toolName: toolName, result: resultString });
 
-                            // We need to send the result back to the LLM to get a final response
-                            // Add the tool call and result to the history/context and resend
+
+                            // Add the tool call and result to the history and resend
                             const messagesWithToolResult = [
-                                ...messages, // Original messages
-                                { role: 'assistant', content: responseText }, // LLM's response containing the tool call
-                                { role: 'user', content: `--- TOOL RESULT for ${toolName} ---\n${toolResult}\n--- END TOOL RESULT ---` } // Result (using user role as 'tool' role isn't standard/used here)
+                                ...messages, // Use original messages before tool injection/truncation
+                                { role: 'assistant', content: rawResponseContent }, // LLM's response containing the tool call
+                                // Use a 'user' role for tool results for compatibility, clearly marking it
+                                { role: 'user', content: `--- TOOL RESULT (${toolName}) ---\n${resultString}\n--- END TOOL RESULT ---` }
                             ];
-                             // Prevent infinite loops if tool call fails repeatedly
-                             // Add a counter or check history depth? For jam, maybe just proceed.
 
-                            // Resend to LLM with the tool result included
-                            return await sendAbyssMessage(messagesWithToolResult, internalCall);
+                             // Resend to LLM with the tool result included
+                             // Prevent infinite loops: Add a depth counter? For now, just proceed.
+                             return await sendAbyssMessage(messagesWithToolResult, internalCall);
 
                         } catch (e) {
                             logMessage(`Error parsing tool arguments or executing tool ${toolName}: ${e}`, 'error');
-                            return `Error processing tool call: ${e.message}`;
+                            logEvent('llm_tool_failed', { toolName: toolName, argsJson: toolArgsJson, error: `Execution/Parse Error: ${e.message}` });
+                            // Respond with error message instead of calling tool again
+                            responseText = `Error processing tool call for ${toolName}: ${e.message}`;
                         }
                     } else {
                         logMessage(`LLM tried to call unknown tool: ${toolName}`, 'error');
-                        return `Error: Unknown tool '${toolName}'.`;
+                        logEvent('llm_tool_failed', { toolName: toolName, argsJson: toolArgsJson, error: 'Unknown tool' });
+                        // Respond with error message
+                        responseText = `Error: Unknown tool '${toolName}'.`;
                     }
                 } else {
-                    // No tool call detected, this is the final response
-                    return responseText;
+                    // No tool call detected, this is the final natural language response
+                    responseText = rawResponseContent;
                 }
 
             } catch (error) {
                 logMessage(`Error during LLM communication: ${error}`, 'error');
-                 // Retry logic?
-                 // For now, just return error message.
-                 // Don't invent fake moves - just report error.
-                 await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a bit before potentially retrying
-                 // Simple retry once:
-                 // TODO: Implement better retry logic if needed
-                 // try { ... } catch { return "LLM Error"; }
-
-                return `Abyss communication error: ${error.message}`;
+                console.error("LLM Error:", error);
+                 logEvent('llm_error', { context: internalCall ? 'internal' : 'user_chat', message: error.message, stack: error.stack });
+                 responseText = `Abyss communication error: ${error.message}`;
+                 // Simple retry could be added here if needed
             }
+
+            return responseText; // Return the final response (either text or error message)
         }
 
         async function handleChatSubmit() {
             const message = chatInput.value.trim();
-            if (!message || !llmReady) return;
+            if (!message || !llmReady || llmLoading) return;
 
             logMessage(`Player: ${message}`, 'user');
             chatInput.value = '';
+            chatInput.disabled = true; // Disable input while processing
+            sendChatButton.disabled = true;
 
             // Add user message to history
             chatHistory.push({ role: 'user', content: message });
             if (chatHistory.length > MAX_CHAT_HISTORY) {
-                chatHistory.shift(); // Remove oldest message
+                chatHistory.splice(0, chatHistory.length - MAX_CHAT_HISTORY); // More robust truncation
             }
 
-            // Special handling for tool_creation_tool usage via chat
+            // Special handling for tool_creation_tool usage via chat command
             let isToolCreationCommand = false;
             if (player && player.hasAbility('tool_creation_tool')) {
-                 // Check if the player is trying to use the tool
-                 // Example command: /create_tool name="Spawn Creature" description="Creates a basic creature near the player"
                  const createToolMatch = message.match(/^\/create_tool\s+name="([^"]+)"\s+description="([^"]+)"/i);
                  if (createToolMatch) {
                      isToolCreationCommand = true;
                      const toolName = createToolMatch[1];
                      const toolDescription = createToolMatch[2];
                      logMessage(`Player using tool_creation_tool artifact to create: ${toolName}`, 'llm');
+                     logEvent('player_command', { command: '/create_tool', name: toolName, description: toolDescription });
 
                      // Manually call the base tool_creation_tool function
                      const creationResult = await availableLLMTools.tool_creation_tool.function({ name: toolName, description: toolDescription });
@@ -1513,35 +2049,35 @@ Now, generate the JSON schema for '${args.name}':`;
                  }
             }
 
-
             if (!isToolCreationCommand) {
                  // Send history to LLM and get response
                  const response = await sendAbyssMessage(chatHistory);
                  logMessage(`Abyss: ${response}`, 'llm');
 
-                 // Add assistant response to history
-                 chatHistory.push({ role: 'assistant', content: response });
-                 if (chatHistory.length > MAX_CHAT_HISTORY) {
-                     chatHistory.shift();
+                 // Add assistant response to history (if it's not empty/error?)
+                 if (response) {
+                     chatHistory.push({ role: 'assistant', content: response });
+                     if (chatHistory.length > MAX_CHAT_HISTORY) {
+                         chatHistory.splice(0, chatHistory.length - MAX_CHAT_HISTORY);
+                     }
                  }
             }
+
+            chatInput.disabled = false; // Re-enable input
+            sendChatButton.disabled = false;
+            chatInput.focus(); // Focus back on input
         }
 
         // --- UI Updates ---
         function updatePlayerUI() {
+            if (!player) return;
             // Update button states based on available artifacts
-            attackMeleeButton.disabled = !(player?.hasAbility('attack_melee'));
-            attackRangeButton.disabled = !(player?.hasAbility('attack_range'));
-            // Interact button always enabled? Or needs 'see'? Let's say always enabled.
-            // interactButton.disabled = !(player?.hasAbility('see'));
-
-            attackMeleeButton.style.opacity = attackMeleeButton.disabled ? 0.5 : 1;
-            attackRangeButton.style.opacity = attackRangeButton.disabled ? 0.5 : 1;
-            // interactButton.style.opacity = interactButton.disabled ? 0.5 : 1;
-
-             // Maybe display current artifacts?
-             // const artifactList = player ? Array.from(player.artifacts.keys()).join(', ') : 'None';
-             // logMessage(`Player Artifacts: [${artifactList}]`, 'ui'); // Log instead of UI clutter for now
+            const canMelee = player.hasAbility('attack_melee');
+            const canRange = player.hasAbility('attack_range');
+            attackMeleeButton.disabled = !canMelee;
+            attackRangeButton.disabled = !canRange;
+            // Interact button always enabled for now
+            interactButton.disabled = false;
         }
 
         // --- Game Setup ---
@@ -1549,44 +2085,59 @@ Now, generate the JSON schema for '${args.name}':`;
             logMessage("Setting up initial world state (Non-LLM)...", 'system');
 
             // Player
-            player = new Entity('player_0', { x: 0, y: 1, z: ARENA_RADIUS * 0.8 }, true); // Start near edge
+            player = new Entity('player_0', { x: 0, y: 1, z: ARENA_RADIUS * 0.8 }, true);
+            // Use window scope for access in tool functions if needed
+            window.player = player;
+            window.entities = entities;
+            window.artifacts = artifacts;
+            window.createArtifact = createArtifact;
+            window.logMessage = logMessage;
+            window.logEvent = logEvent;
+            window.THREE = THREE;
+            window.RAPIER = RAPIER;
+
+
             const startMove = createArtifact('move', { x: player.mesh.position.x + 1, y: 0.5, z: player.mesh.position.z });
             const startSee = createArtifact('see', { x: player.mesh.position.x - 1, y: 0.5, z: player.mesh.position.z });
-            player.addArtifact(startMove);
-            player.addArtifact(startSee);
+            // Ensure pickup happens correctly
+            setTimeout(() => { // Delay slightly to ensure physics body is ready?
+                 player?.addArtifact(startMove);
+                 player?.addArtifact(startSee);
+                 updatePlayerUI(); // Update UI after adding artifacts
+            }, 100); // Short delay
+
 
             // Goal Artifact
-            createArtifact('tool_creation_tool', { x: 0, y: 0.5, z: -ARENA_RADIUS * 0.9 }); // Place at opposite side near center
+            createArtifact('tool_creation_tool', { x: 0, y: 0.5, z: -ARENA_RADIUS * 0.8 }); // Place near center edge
 
             // Other Artifacts (Scattered)
             for (let i = 0; i < 20; i++) {
-                createArtifact(); // Create random artifact at random position
+                createArtifact();
             }
 
             // Enemies (Different levels/circles)
             const numEnemies = 10;
             for (let i = 0; i < numEnemies; i++) {
                 const level = Math.floor(i / (numEnemies / 3)); // 0, 1, 2
-                const radius = ARENA_RADIUS * (0.6 - level * 0.2); // Closer to center for higher levels
+                const radius = ARENA_RADIUS * (0.6 - level * 0.25); // Closer to center for higher levels
                 const angle = Math.random() * Math.PI * 2;
                 const pos = { x: Math.cos(angle) * radius, y: 1, z: Math.sin(angle) * radius };
                 const enemy = new Entity(`creature_${entityIdCounter++}`, pos);
 
-                // Give enemies basic artifacts based on level
-                enemy.addArtifact(createArtifact('move', { ...pos, y: 0.5, x: pos.x + 0.5 }));
-                enemy.addArtifact(createArtifact('see', { ...pos, y: 0.5, x: pos.x - 0.5 }));
-                if (level >= 0) { // All enemies get melee
-                     enemy.addArtifact(createArtifact('attack_melee', { ...pos, y: 0.5, z: pos.z + 0.5 }));
-                }
-                 if (level >= 1 && Math.random() < 0.5) { // Level 1+ have chance for range
-                     enemy.addArtifact(createArtifact('attack_range', { ...pos, y: 0.5, z: pos.z - 0.5 }));
-                 }
-                 // Level 2 enemies are just tougher by default (more HP implicitly via artifacts)
-                 // Or we could add HP scaling later.
+                // Give enemies basic artifacts
+                 setTimeout(() => { // Delay slightly
+                     enemy?.addArtifact(createArtifact('move', { ...pos, y: 0.5, x: pos.x + 0.5 }));
+                     enemy?.addArtifact(createArtifact('see', { ...pos, y: 0.5, x: pos.x - 0.5 }));
+                     if (level >= 0) { // All enemies get melee
+                          enemy?.addArtifact(createArtifact('attack_melee', { ...pos, y: 0.5, z: pos.z + 0.5 }));
+                     }
+                      if (level >= 1 && Math.random() < 0.5) { // Level 1+ have chance for range
+                          enemy?.addArtifact(createArtifact('attack_range', { ...pos, y: 0.5, z: pos.z - 0.5 }));
+                      }
+                 }, 150 + i * 10); // Stagger enemy artifact addition slightly
             }
 
             logMessage("Initial world setup complete.", 'system');
-            updatePlayerUI();
         }
 
         // --- Main Initialization ---
@@ -1597,23 +2148,40 @@ Now, generate the JSON schema for '${args.name}':`;
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x111122);
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 15, ARENA_RADIUS * 1.1); // Start further back
+            // Initial camera position might be updated later based on player spawn
+            camera.position.set(0, 15, ARENA_RADIUS * 1.1);
             camera.lookAt(0, 0, 0);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.shadowMap.enabled = true; // Enable shadows if lights are added
+            renderer.shadowMap.enabled = true;
             document.body.appendChild(renderer.domElement);
 
             clock = new THREE.Clock();
 
             // Lighting
-            const ambientLight = new THREE.AmbientLight(0x404060, 1); // Soft ambient light
+            const ambientLight = new THREE.AmbientLight(0x606070, 1); // Slightly brighter ambient
             scene.add(ambientLight);
             const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
-            directionalLight.position.set(5, 10, 7);
+            directionalLight.position.set(8, 12, 10); // Adjust angle
             directionalLight.castShadow = true;
+            // Configure shadow map
+             directionalLight.shadow.mapSize.width = 1024;
+             directionalLight.shadow.mapSize.height = 1024;
+             directionalLight.shadow.camera.near = 0.5;
+             directionalLight.shadow.camera.far = 50;
+             directionalLight.shadow.camera.left = -ARENA_RADIUS * 1.2;
+             directionalLight.shadow.camera.right = ARENA_RADIUS * 1.2;
+             directionalLight.shadow.camera.top = ARENA_RADIUS * 1.2;
+             directionalLight.shadow.camera.bottom = -ARENA_RADIUS * 1.2;
+
             scene.add(directionalLight);
+            // Add a light helper (optional, for debugging)
+            // const lightHelper = new THREE.DirectionalLightHelper(directionalLight, 5);
+            // scene.add(lightHelper);
+             // const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
+             // scene.add(shadowHelper);
+
 
             // Physics
             loadingOverlay.textContent = "Initializing Physics...";
@@ -1625,12 +2193,10 @@ Now, generate the JSON schema for '${args.name}':`;
 
             // Controls
             loadingOverlay.textContent = "Setting up Controls...";
-            initControls(); // Includes touch, keyboard, gamepad listeners
+            initControls();
 
              // LLM Setup UI Listeners
              llmEngineSelect.addEventListener('change', updateLLMControls);
-             webllmModelSelect.addEventListener('change', () => { /* Maybe prompt reload */ });
-             llmjsModelSelect.addEventListener('change', () => { /* Maybe prompt reload */ });
              loadLlmButton.addEventListener('click', loadLLM);
              llmTemperatureSlider.addEventListener('input', () => {
                  temperatureValueSpan.textContent = llmTemperatureSlider.value;
@@ -1650,7 +2216,38 @@ Now, generate the JSON schema for '${args.name}':`;
 
             // Pre-create world content for instant playability
             loadingOverlay.textContent = "Populating Abyss...";
-            setupInitialWorld();
+            setupInitialWorld(); // Creates player, enemies, artifacts
+
+             // Demo Mode Button Listener
+             toggleDemoButton.addEventListener('click', () => {
+                 demoModeActive = !demoModeActive;
+                 if (demoModeActive) {
+                     toggleDemoButton.textContent = 'Disable Demo Mode';
+                     demoStatusDiv.textContent = 'Demo: ON';
+                     logMessage("Demo Mode Enabled.", 'system');
+                     demoState = 'IDLE'; // Reset state
+                     demoStateTimer = DEMO_STATE_TIMEOUT; // Force immediate check
+                     demoTargetArtifact = null;
+                     demoTargetEntity = null;
+                 } else {
+                     toggleDemoButton.textContent = 'Enable Demo Mode';
+                     demoStatusDiv.textContent = 'Demo: OFF';
+                     logMessage("Demo Mode Disabled.", 'system');
+                     // Reset input state when disabling demo
+                     Object.keys(inputState).forEach(key => {
+                         if (typeof inputState[key] === 'number') inputState[key] = 0;
+                         if (typeof inputState[key] === 'boolean') inputState[key] = false;
+                         if (typeof inputState[key] === 'object' && inputState[key] !== null) {
+                             inputState[key].x = 0; inputState[key].y = 0;
+                         }
+                     });
+                 }
+             });
+
+             // Recording Button Listeners
+             startRecordingButton.addEventListener('click', startRecording);
+             stopRecordingButton.addEventListener('click', stopRecording);
+
 
             // Handle window resize
             window.addEventListener('resize', () => {
@@ -1668,60 +2265,154 @@ Now, generate the JSON schema for '${args.name}':`;
         // --- Game Loop ---
         function animate() {
             requestAnimationFrame(animate);
-            const deltaTime = clock.getDelta();
+            const deltaTime = Math.min(clock.getDelta(), 0.1); // Get delta time, clamp to prevent large jumps
 
-            // Process Input
-            processInput(deltaTime);
-
-            // Step Physics World
-            if (physicsWorld) {
-                physicsWorld.step(eventQueue);
-                handleCollisions(); // Process collisions after step
+            // Increment frame counter if recording
+            if (isRecording) {
+                frameCounter++;
             }
 
-            // Update Entities (includes syncing physics to graphics, AI)
-            entities.forEach(entity => entity.update(deltaTime));
+            // 1. Process Input (User or Demo) -> Modifies inputState
+            if (demoModeActive) {
+                processDemoInput(deltaTime);
+            } else {
+                processInput(deltaTime);
+            }
 
-            // Update non-entity meshes (like projectiles)
+            // 2. Apply Input State to Physics -> Reads inputState, applies forces/torques, triggers actions
+            let interactionTriggered = false; // Track momentary actions
+            let meleeTriggered = false;
+            let rangeTriggered = false;
+
+            if (player && player.rigidBody && physicsWorld.getRigidBody(player.rigidBody.handle)) {
+                let moveImpulse = { x: 0, y: 0, z: 0 };
+                let rotationTorque = { y: 0 };
+                const moveSpeed = 40.0; // Impulse multiplier per second
+                const rotateSpeed = 2.0; // Torque multiplier per second
+
+                // Combine movement inputs (allow diagonal)
+                let moveZ = inputState.moveBackward - inputState.moveForward;
+                let moveX = inputState.moveRight - inputState.moveLeft;
+                // Combine rotation inputs
+                rotationTorque.y = (inputState.rotateLeft - inputState.rotateRight) * rotateSpeed;
+
+                // Apply Movement based on 'move' artifact
+                if (player.hasAbility('move') && (moveX !== 0 || moveZ !== 0)) {
+                    const moveVec = new THREE.Vector3(moveX, 0, moveZ);
+                    moveVec.normalize().multiplyScalar(moveSpeed * deltaTime); // Scale by delta time
+                    const worldImpulse = moveVec.applyQuaternion(player.mesh.quaternion);
+                    player.rigidBody.applyImpulse(worldImpulse, true);
+                    player.lastMoveTime = Date.now();
+                } else if ((moveX !== 0 || moveZ !== 0) && !player.hasAbility('move')) {
+                    if (!demoModeActive) logMessage("Cannot move without a 'move' artifact!", 'warning');
+                }
+
+                // Apply Rotation
+                if (rotationTorque.y !== 0) {
+                    player.rigidBody.applyTorqueImpulse({ x: 0, y: rotationTorque.y * deltaTime, z: 0 }, true); // Scale torque by delta time
+                    player.lastSeeTime = Date.now();
+                }
+
+                 // Check Momentary Actions (Interact, Attack)
+                 if (inputState.actionInteract) {
+                     player.interact();
+                     interactionTriggered = true;
+                 }
+                 if (inputState.actionMelee) {
+                     player.performAttack('attack_melee'); // Cooldown handled inside
+                     meleeTriggered = true;
+                 }
+                 if (inputState.actionRange) {
+                     player.performAttack('attack_range'); // Cooldown handled inside
+                     rangeTriggered = true;
+                 }
+            }
+
+            // 3. Step Physics World & Handle Collisions
+            if (physicsWorld) {
+                physicsWorld.step(eventQueue);
+                handleCollisions(); // Process collision events (logs events inside)
+            }
+
+            // 4. Update Entities (AI, Artifact Expiration, Sync Graphics)
+            entities.forEach(entity => entity.update(deltaTime)); // Logs events inside
+
+            // 5. Update non-entity meshes (like projectiles - visual sync only)
              physicsWorld?.colliders.forEach(collider => {
                  if (collider.userData?.type === 'projectile' && collider.userData.mesh) {
                      const body = collider.parent();
-                     if (body) {
+                     // Check if body and mesh still exist
+                     if (body && physicsWorld.getRigidBody(body.handle) && collider.userData.mesh.parent) {
                          collider.userData.mesh.position.copy(body.translation());
                          collider.userData.mesh.quaternion.copy(body.rotation());
+                     } else if (collider.userData.mesh.parent) {
+                         // Body gone but mesh remains? Remove mesh.
+                         scene.remove(collider.userData.mesh);
+                         logEvent('projectile_mesh_cleanup', { projectileId: collider.userData.id });
                      }
                  }
              });
 
-            // Update Camera (Simple third-person follow)
+            // 6. Log Frame Data (After updates, captures the state for this frame)
+            if (isRecording) {
+                logFrameData(deltaTime);
+            }
+
+            // 7. Reset Momentary Action Flags from inputState
+            // Do this *after* logging the frame data which includes the applied input state
+            if(interactionTriggered) inputState.actionInteract = false;
+            if(meleeTriggered) inputState.actionMelee = false;
+            if(rangeTriggered) inputState.actionRange = false;
+            // Note: Continuous flags (moveForward etc.) are reset by input devices/demo logic each frame.
+
+
+            // 8. Update Camera
             if (player && player.mesh) {
-                const offset = new THREE.Vector3(0, 3, 5); // Behind and slightly above
-                const desiredPosition = player.mesh.position.clone().add(offset.applyQuaternion(player.mesh.quaternion));
-                camera.position.lerp(desiredPosition, 0.1); // Smooth follow
-                const lookAtTarget = player.mesh.position.clone().add(new THREE.Vector3(0, 1, 0)); // Look slightly above player base
+                const offset = new THREE.Vector3(0, 4, 6); // Adjusted offset
+                // Apply player rotation to offset, then add to player position
+                const desiredPosition = player.mesh.position.clone().add(offset.clone().applyQuaternion(player.mesh.quaternion));
+                // Smoothly interpolate camera position
+                camera.position.lerp(desiredPosition, 0.08); // Adjust lerp factor for smoothness
+
+                // Look at a point slightly above the player's base
+                const lookAtTarget = player.mesh.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+                // Smoothly interpolate lookAt target? Or just look directly? Direct look is usually fine.
                 camera.lookAt(lookAtTarget);
             }
 
-             // Enforce Arena Boundaries (simple pushback if physics wall fails)
+
+            // 9. Enforce Arena Boundaries (Physics should handle this, but as a fallback)
              entities.forEach(entity => {
-                 const pos = entity.mesh.position;
-                 const distSq = pos.x * pos.x + pos.z * pos.z;
-                 if (distSq > ARENA_RADIUS * ARENA_RADIUS) {
-                     const dist = Math.sqrt(distSq);
-                     const correctionFactor = ARENA_RADIUS / dist;
-                     const correctedPos = { x: pos.x * correctionFactor, y: pos.y, z: pos.z * correctionFactor };
-                     entity.rigidBody.setTranslation(correctedPos, true); // Teleport back in slightly
-                     // Optionally apply opposing impulse?
-                 }
-                 // Keep entities above ground
-                 if (pos.y < 0.3 && entity.rigidBody) {
-                    entity.rigidBody.setTranslation({x: pos.x, y: 0.3, z: pos.z}, true);
-                    entity.rigidBody.setLinvel({x:0, y:0, z:0}, true); // Stop downward velocity
+                 if (entity.rigidBody && physicsWorld.getRigidBody(entity.rigidBody.handle)) {
+                     const pos = entity.rigidBody.translation();
+                     const distSq = pos.x * pos.x + pos.z * pos.z;
+                     const maxDistSq = (ARENA_RADIUS - 0.5) * (ARENA_RADIUS - 0.5); // Keep slightly inside radius
+
+                     if (distSq > maxDistSq) {
+                         const dist = Math.sqrt(distSq);
+                         const correctionFactor = (ARENA_RADIUS - 0.5) / dist;
+                         const correctedPos = { x: pos.x * correctionFactor, y: pos.y, z: pos.z * correctionFactor };
+                         entity.rigidBody.setTranslation(correctedPos, true);
+                         // Optional: Zero out velocity pointing outwards?
+                         const vel = entity.rigidBody.linvel();
+                         const radialDir = {x: correctedPos.x / (dist || 1), z: correctedPos.z / (dist || 1)};
+                         const outwardSpeed = vel.x * radialDir.x + vel.z * radialDir.z;
+                         if (outwardSpeed > 0) {
+                             entity.rigidBody.setLinvel({x: vel.x - radialDir.x * outwardSpeed, y: vel.y, z: vel.z - radialDir.z * outwardSpeed}, true);
+                         }
+                         logEvent('boundary_enforced', { entityId: entity.id, position: [pos.x, pos.y, pos.z] });
+                     }
+                     // Keep entities above ground
+                     if (pos.y < 0.1) {
+                        entity.rigidBody.setTranslation({x: pos.x, y: 0.1, z: pos.z}, true);
+                        entity.rigidBody.setLinvel({x:0, y:0, z:0}, true); // Stop downward velocity
+                        logEvent('ground_enforced', { entityId: entity.id, position: [pos.x, pos.y, pos.z] });
+                     }
                  }
              });
 
 
-            // Render Scene
+            // 10. Render Scene
             renderer.render(scene, camera);
         }
 
@@ -1730,7 +2421,7 @@ Now, generate the JSON schema for '${args.name}':`;
             console.error("Initialization failed:", err);
             logMessage(`Critical Error during Initialization: ${err}`, 'error');
             loadingOverlay.textContent = `Error: ${err.message}. Please refresh.`;
-            loadingOverlay.style.display = 'flex';
+            loadingOverlay.style.display = 'flex'; // Ensure overlay is visible on error
         });
 
     </script>
